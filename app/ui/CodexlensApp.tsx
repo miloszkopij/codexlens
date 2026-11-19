@@ -2,31 +2,40 @@
 
 import {
   Activity, AlertTriangle, BarChart3, Bell, Building2, CalendarDays, Check, ChevronDown,
-  ChevronRight, CircleDollarSign, Command, Download, ExternalLink, FileUp,
+  ChevronRight, CircleDollarSign, Command, Download, FileUp,
   Gauge, GitCompareArrows, Group, LayoutDashboard, ListChecks, LoaderCircle, Menu, MoreHorizontal,
-  RefreshCw, Search, Settings, ShieldCheck, SlidersHorizontal, TrendingDown, TrendingUp, Users, X,
+  RefreshCw, Settings, ShieldCheck, SlidersHorizontal, TrendingDown, TrendingUp, Users, X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { demoData } from "../demo-data";
+import { classifyPeopleRoleFamily, roleFamilies } from "../../lib/role-families";
+import { manualOverageValue } from "../../lib/billing-estimate";
+import { changeCounts, changeTypes, matchesChange, type ChangeArea, type ChangeType, type ChangesPage } from "../../lib/change-filters";
 import type {
   AnalyticsBreakdownRow, AnalyticsBucket, AnalyticsData, AppSettings, ChangeEvent,
-  Currency, DashboardData, Entity, Member, WorkspaceGroup,
+  Currency, DashboardData, Entity, ManagementManagerOption, Member, WorkspaceGroup,
 } from "../types";
 import BubbleLogo from "./BubbleLogo";
 import ManagementCostView from "./ManagementCostView";
 import OrganizerView from "./OrganizerView";
+import MembersWorkspaceView from "./MembersWorkspaceView";
+import MemberGroupEditor from "./MemberGroupEditor";
+import AutoSyncControl from "./AutoSyncControl";
+import PermissionsView from "./PermissionsView";
+import StructureCoverage from "./StructureCoverage";
 
-type View = "overview" | "analytics" | "management" | "members" | "organize" | "changes";
+type View = "overview" | "analytics" | "management" | "members" | "organize" | "permissions" | "changes";
 type EntityFilter = "All" | Entity;
 type AnalyticsTab = "users" | "groups" | "entities";
-type TrendMetric = "invoice" | "value" | "usage";
+type TrendMetric = "value" | "usage";
 
 const navItems: Array<{ id: View; label: string; icon: typeof Users }> = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
   { id: "analytics", label: "Analytics", icon: BarChart3 },
-  { id: "management", label: "David's org", icon: Group },
-  { id: "members", label: "Members", icon: Users },
+  { id: "management", label: "Management", icon: Group },
+  { id: "members", label: "Members & groups", icon: Users },
   { id: "organize", label: "Organize", icon: ListChecks },
+  { id: "permissions", label: "Permissions & roles", icon: ShieldCheck },
   { id: "changes", label: "Changes", icon: GitCompareArrows },
 ];
 
@@ -39,7 +48,7 @@ function formatNumber(value: number) {
 }
 
 function formatMoney(value: number | null, currency: Currency) {
-  if (value === null) return "Set price";
+  if (value === null) return "Unavailable";
   return new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 2 }).format(value);
 }
 
@@ -51,35 +60,6 @@ function usageValue(usage: number, data: Pick<DashboardData, "usageUnit" | "sett
 
 function costCurrency(data: Pick<DashboardData, "usageUnit" | "settings">): Currency {
   return data.usageUnit === "usd" ? "USD" : data.settings.currency;
-}
-
-function estimatedInvoice(settings: AppSettings) {
-  if (settings.unbilledOverageCredits === null || settings.pricePerCredit === null) return null;
-  return settings.unbilledOverageCredits * settings.pricePerCredit;
-}
-
-type InvoiceAllocationModel = {
-  referenceInvoice: number;
-  referenceUsage: number;
-  overageShare: number;
-  estimatedCostPerUsageCredit: number;
-  referencePeriod: string;
-};
-
-function invoiceAllocationModel(settings: AppSettings, reference: AnalyticsData | null): InvoiceAllocationModel | null {
-  const referenceInvoice = estimatedInvoice(settings);
-  if (
-    referenceInvoice === null || !reference || reference.unit !== "credits" || reference.totals.usage <= 0 ||
-    reference.startDate !== settings.billingPeriodStart || reference.endDate !== settings.billingPeriodEnd ||
-    settings.unbilledOverageCredits === null
-  ) return null;
-  return {
-    referenceInvoice,
-    referenceUsage: reference.totals.usage,
-    overageShare: settings.unbilledOverageCredits / reference.totals.usage,
-    estimatedCostPerUsageCredit: referenceInvoice / reference.totals.usage,
-    referencePeriod: `${reference.startDate} – ${reference.endDate}`,
-  };
 }
 
 function billingPeriodLabel(settings: AppSettings) {
@@ -178,6 +158,20 @@ function illustrativeAnalytics(data: DashboardData, startDate: string, endDate: 
     const usage = members.reduce((sum, member) => sum + member.usage, 0);
     return { id: entityName, label: entityName, usage, usageValue: usageValue(usage, data), messages: members.reduce((sum, member) => sum + member.messages, 0), activeUsers: members.filter((member) => member.usage > 0).length, memberCount: members.length };
   }).filter((row) => row.memberCount > 0);
+  const roleMap = new Map<string, { label: string; usage: number; messages: number; activeUsers: number; memberCount: number }>();
+  for (const member of data.members) {
+    const label = classifyPeopleRoleFamily(member.peopleRole);
+    const current = roleMap.get(label) ?? { label, usage: 0, messages: 0, activeUsers: 0, memberCount: 0 };
+    current.usage += member.usage;
+    current.messages += member.messages;
+    current.activeUsers += member.usage > 0 ? 1 : 0;
+    current.memberCount += 1;
+    roleMap.set(label, current);
+  }
+  const byRole = roleFamilies.map((label) => {
+    const row = roleMap.get(label) ?? { label, usage: 0, messages: 0, activeUsers: 0, memberCount: 0 };
+    return { id: label, label, usage: row.usage, usageValue: usageValue(row.usage, data), messages: row.messages, activeUsers: row.activeUsers, memberCount: row.memberCount };
+  }).filter((row) => row.memberCount > 0);
   return {
     startDate, endDate, bucket, groupId: null, entity: null, unit: data.usageUnit,
     source: data.usageSource, settings: data.settings, valuationCoverage: totalValue === null ? "unavailable" : "complete",
@@ -185,6 +179,7 @@ function illustrativeAnalytics(data: DashboardData, startDate: string, endDate: 
     series: data.trend.map((point, index) => ({ key: `demo-${index}`, label: point.label, periodStart: startDate, periodEnd: endDate, usage: point.credits, usageValue: usageValue(point.credits, data), messages: 0, activeUsers: 0 })),
     byEntity,
     byGroup: data.groups.map((group) => ({ id: group.id, label: group.name, sublabel: group.description, usage: group.usage, usageValue: usageValue(group.usage, data), messages: 0, activeUsers: group.activeMembers, memberCount: group.memberCount })).sort((a, b) => b.usage - a.usage),
+    byRole,
     byUser: memberRows.sort((a, b) => b.usage - a.usage), warning: null,
   };
 }
@@ -192,6 +187,9 @@ function illustrativeAnalytics(data: DashboardData, startDate: string, endDate: 
 export default function CodexlensApp({ initialView = "overview", forceDemo = false }: { initialView?: View; forceDemo?: boolean }) {
   const [data, setData] = useState<DashboardData>(demoData);
   const [view, setView] = useState<View>(initialView);
+  // Keep draft editors mounted across sidebar navigation. Only reset for a
+  // different workspace or a demo/live boundary, not a cached/live refresh.
+  const [openedEditors, setOpenedEditors] = useState({ organize: initialView === "organize", permissions: initialView === "permissions" });
   const [entity, setEntity] = useState<EntityFilter>("All");
   const [query, setQuery] = useState("");
   const [selectedMember, setSelectedMember] = useState<Member | null>(null);
@@ -200,6 +198,7 @@ export default function CodexlensApp({ initialView = "overview", forceDemo = fal
   const [syncing, setSyncing] = useState(false);
   const [importingUsage, setImportingUsage] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [managementManager, setManagementManager] = useState<ManagementManagerOption | null>(null);
 
   useEffect(() => {
     if (forceDemo) return;
@@ -230,13 +229,13 @@ export default function CodexlensApp({ initialView = "overview", forceDemo = fal
         error?: string;
         dashboard: DashboardData;
         changesCreated: number;
-        sync?: { directory: { members: number; groups: number }; usageHistory: { updated: boolean; imported: number; unmatched: number; message: string } };
+        sync?: { directory: { members: number; groups: number }; usageHistory: { updated: boolean; imported: number; unmatched: number; message: string }; roleImport?: { updated: boolean; message: string } };
       };
       if (!response.ok) throw new Error(payload.error || "Sync failed");
       setData(payload.dashboard);
       const counts = payload.sync?.directory;
       const usageMessage = payload.sync?.usageHistory.message ?? "Usage sync status was not returned.";
-      setNotice(`Directory synced${counts ? ` — ${counts.members} members, ${counts.groups} groups` : ""}; ${payload.changesCreated} changes detected. ${usageMessage}`);
+      setNotice(`Directory synced${counts ? ` — ${counts.members} members, ${counts.groups} groups` : ""}; ${payload.changesCreated} changes detected. ${payload.sync?.roleImport?.message ?? ""} ${usageMessage}`);
     } catch (error) { setNotice(error instanceof Error ? error.message : "Sync failed"); }
     finally { setSyncing(false); }
   }
@@ -272,12 +271,14 @@ export default function CodexlensApp({ initialView = "overview", forceDemo = fal
   }
 
   function navigate(nextView: View) {
+    if (nextView === "organize" || nextView === "permissions") setOpenedEditors((current) => ({ ...current, [nextView]: true }));
     setView(nextView); setMobileNavOpen(false);
+    window.scrollTo({ top: 0, behavior: "instant" });
   }
 
   function updateSettings(settings: AppSettings) {
     setData((current) => ({ ...current, settings }));
-    setNotice(settings.pricePerCredit === null ? "Credit valuation cleared." : `Usage value and estimated overage invoice now use ${settings.pricePerCredit} ${settings.currency} per credit.`);
+    setNotice(settings.pricePerCredit === null ? "Credit valuation cleared." : `Manual credit valuation now uses ${settings.pricePerCredit} ${settings.currency} per credit; OpenAI API cost estimates take precedence.`);
   }
 
   return (
@@ -295,18 +296,19 @@ export default function CodexlensApp({ initialView = "overview", forceDemo = fal
 
       {mobileNavOpen && <button className="sidebar-scrim" aria-label="Close navigation" onClick={() => setMobileNavOpen(false)} />}
       <section className="workspace">
-        <header className="topbar"><div className="breadcrumb"><button className="icon-button mobile-menu" onClick={() => setMobileNavOpen(true)} aria-label="Open navigation"><Menu size={18} /></button><span>Members, groups & roles</span><ChevronRight size={14} /><strong>{navItems.find((item) => item.id === view)?.label}</strong></div><div className="topbar-actions"><span className={`source-status source-status--${data.mode}`}><i />{sourceLabel(data)}</span><button className="icon-button" aria-label="Notifications" onClick={() => navigate("changes")}><Bell size={17} />{unreadChanges > 0 && <i className="notification-dot" />}</button><button className="button button--primary" onClick={syncWorkspace} disabled={syncing}>{syncing ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}{syncing ? "Syncing" : "Sync directory"}</button></div></header>
+        <header className="topbar"><div className="breadcrumb"><button className="icon-button mobile-menu" onClick={() => setMobileNavOpen(true)} aria-label="Open navigation"><Menu size={18} /></button><span>Members, groups & roles</span><ChevronRight size={14} /><strong>{navItems.find((item) => item.id === view)?.label}</strong></div><div className="topbar-actions"><AutoSyncControl data={data} onRefresh={refreshDashboard} onNotice={setNotice} /><span className={`source-status source-status--${data.mode}`}><i />{sourceLabel(data)}</span><button className="icon-button" aria-label="Notifications" onClick={() => navigate("changes")}><Bell size={17} />{unreadChanges > 0 && <i className="notification-dot" />}</button><button className="button button--primary" onClick={syncWorkspace} disabled={syncing}>{syncing ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}{syncing ? "Syncing" : "Sync directory"}</button></div></header>
         {notice && <div className="notice-bar"><Activity size={15} /><span>{notice}</span><button onClick={() => setNotice(null)} aria-label="Dismiss"><X size={15} /></button></div>}
 
         {view === "overview" && <Overview key={`${data.mode}:${data.settings.billingPeriodStart}:${data.settings.billingPeriodEnd}`} data={data} importingUsage={importingUsage} onImportUsage={importUsageFile} onOpenSettings={() => setSettingsOpen(true)} onViewAnalytics={() => navigate("analytics")} onViewMembers={() => navigate("members")} onViewChanges={() => navigate("changes")} />}
         {view === "analytics" && <AnalyticsView data={data} importingUsage={importingUsage} onImportUsage={importUsageFile} onOpenSettings={() => setSettingsOpen(true)} />}
-        {view === "management" && <ManagementCostView data={data} onOpenSettings={() => setSettingsOpen(true)} />}
-        {view === "members" && <MembersView data={data} members={filteredMembers} totalMembers={data.members.length} entity={entity} query={query} onEntityChange={setEntity} onQueryChange={setQuery} onSelectMember={setSelectedMember} />}
-        {view === "organize" && <OrganizerView data={data} onSelectMember={setSelectedMember} onRefresh={refreshDashboard} onNotice={setNotice} />}
-        {view === "changes" && <ChangesView changes={data.changes} onSelectMember={(id) => { const member = data.members.find((item) => item.id === id); if (member) setSelectedMember(member); }} onMarkRead={markChangesRead} />}
+        {view === "management" && <ManagementCostView data={data} selectedManager={managementManager} onManagerChange={setManagementManager} onOpenSettings={() => setSettingsOpen(true)} />}
+        {view === "members" && <MembersView data={data} members={filteredMembers} totalMembers={data.members.length} entity={entity} query={query} onEntityChange={setEntity} onQueryChange={setQuery} onSelectMember={setSelectedMember} onRefresh={refreshDashboard} onNotice={setNotice} />}
+        {openedEditors.organize && <div hidden={view !== "organize"}><OrganizerView key={`${data.mode === "demo"}:${data.workspaceId}`} data={data} onSelectMember={setSelectedMember} onRefresh={refreshDashboard} onNotice={setNotice} /></div>}
+        {openedEditors.permissions && <div hidden={view !== "permissions"}><PermissionsView key={`${data.mode === "demo"}:${data.workspaceId}`} data={data} onNotice={setNotice} /></div>}
+        {view === "changes" && <ChangesView key={`${data.mode}:${data.workspaceId}`} changes={data.changes} demo={data.mode === "demo"} onSelectMember={(id) => { const member = data.members.find((item) => item.id === id); if (member) setSelectedMember(member); }} onMarkRead={markChangesRead} />}
       </section>
 
-      {selectedMember && <MemberDrawer member={selectedMember} groups={data.groups} data={data} onClose={() => setSelectedMember(null)} />}
+      {selectedMember && <MemberDrawer key={selectedMember.id} member={data.members.find((member) => member.id === selectedMember.id) ?? selectedMember} groups={data.groups} data={data} onClose={() => setSelectedMember(null)} onRefresh={refreshDashboard} />}
       {settingsOpen && <SettingsDrawer settings={data.settings} usageUnit={data.usageUnit} onClose={() => setSettingsOpen(false)} onSaved={updateSettings} />}
     </main>
   );
@@ -361,14 +363,12 @@ function Overview({ data, importingUsage, onImportUsage, onOpenSettings, onViewA
   const totalUsage = analytics?.totals.usage ?? 0;
   const totalValue = analytics?.totals.usageValue ?? null;
   const activeUsers = analytics?.totals.activeUsers ?? 0;
-  const invoiceMatchesPeriod = startDate === data.settings.billingPeriodStart && endDate === data.settings.billingPeriodEnd;
-  const invoiceEstimate = invoiceMatchesPeriod ? estimatedInvoice(data.settings) : null;
   const periodLabel = `${startDate} – ${endDate}`;
   const loading = !analytics || analytics.startDate !== startDate || analytics.endDate !== endDate || analytics.bucket !== overviewBucket;
   const series = analytics?.series ?? [];
   const maxTrend = Math.max(...series.map((point) => point.usage), 1);
   const groupDetails = new Map(data.groups.map((group) => [group.id, group]));
-  const entityStats = (["Allegro", "eBilet", "Ceneo"] as Entity[]).map((entityName) => {
+  const entityStats = (["Allegro", "eBilet", "Ceneo", "Unknown"] as Entity[]).map((entityName) => {
     const row = analytics?.byEntity.find((item) => item.id === entityName);
     return { entity: entityName, members: data.members.filter((member) => member.entity === entityName).length, usage: row?.usage ?? 0, value: row?.usageValue ?? (analytics?.valuationCoverage === "complete" ? 0 : null) };
   });
@@ -377,14 +377,15 @@ function Overview({ data, importingUsage, onImportUsage, onOpenSettings, onViewA
     <PageIntro eyebrow="Workspace overview" title="See the shape of your workspace." description={`All usage, value, and activity metrics below use ${periodLabel}. Current directory counts and changes since sync are labeled separately.`} actions={<><label className={`button button--secondary file-button${importingUsage ? " disabled" : ""}`}>{importingUsage ? <LoaderCircle className="spin" size={16} /> : <FileUp size={16} />}{importingUsage ? "Importing" : "Import usage CSV"}<input type="file" accept=".csv,text/csv" disabled={importingUsage} onChange={(event) => { const file = event.target.files?.[0]; if (file) onImportUsage(file); event.target.value = ""; }} /></label><a className="button button--secondary" href="/api/export"><Download size={16} />Export report</a></>} />
     <section className="analytics-controls overview-controls panel"><div className="preset-buttons"><button onClick={() => preset(7)}>7D</button><button onClick={() => preset(30)}>30D</button><button onClick={() => preset(90)}>90D</button><button onClick={useBillingPeriod}>Billing</button></div><label><span>From</span><input type="date" value={startDate} max={endDate} onChange={(event) => setRange(event.target.value, endDate)} /></label><label><span>To</span><input type="date" value={endDate} min={startDate} onChange={(event) => setRange(startDate, event.target.value)} /></label><div className="overview-period-note"><CalendarDays size={16} /><span><strong>{periodLabel}</strong><small>All Overview usage data uses this period</small></span></div></section>
     {error && <div className="analytics-warning analytics-warning--error"><Activity size={16} />{error}</div>}
+    {!loading && analytics?.warning && <div className="analytics-warning"><CircleDollarSign size={16} />{analytics.warning}</div>}
     {loading && <div className="overview-loading"><LoaderCircle className="spin" size={14} />Updating period</div>}
     {data.mode === "demo" && <div className="data-banner"><span className="status-mark"><Command size={15} /></span><div><strong>Previewing the codexlens experience</strong><p>Illustrative values are replaced by saved API data after your first sync.</p></div><span className="source-chip">{data.usageSource}</span></div>}
     {data.mode !== "demo" && !loading && totalUsage === 0 && <div className="data-banner data-banner--attention"><span className="status-mark"><BarChart3 size={15} /></span><div><strong>No attributed usage for {periodLabel}</strong><p>Choose another period, run sync, or import attributed history in Analytics.</p></div><button className="button button--secondary" onClick={onViewAnalytics}>Open Analytics</button></div>}
-    {data.usageUnit === "credits" && data.settings.pricePerCredit === null && <button className="pricing-banner" onClick={onOpenSettings}><CircleDollarSign size={17} /><span><strong>Add your contract price per credit</strong><small>Codexlens will calculate usage value for every person, group, entity, and period.</small></span><ChevronRight size={16} /></button>}
+    {data.usageUnit === "credits" && data.settings.pricePerCredit === null && <button className="pricing-banner" onClick={onOpenSettings}><CircleDollarSign size={17} /><span><strong>Add a fallback price per credit</strong><small>OpenAI-provided USD estimates take precedence where available.</small></span><ChevronRight size={16} /></button>}
     <section className="metric-grid">
       <MetricCard label={`Workspace ${analytics?.unit ?? data.usageUnit}`} value={formatNumber(totalUsage)} note={periodLabel} icon={<Activity size={18} />} />
-      <MetricCard label="Usage value" value={formatMoney(totalValue, analytics?.settings.currency ?? costCurrency(data))} note={`${periodLabel} · not an invoice`} action={totalValue === null ? "Configure" : undefined} onClick={onOpenSettings} icon={<CircleDollarSign size={18} />} />
-      <MetricCard label="Estimated invoice" value={invoiceEstimate === null ? "No matching snapshot" : formatMoney(invoiceEstimate, data.settings.currency)} note={invoiceMatchesPeriod ? "Billing overage for selected period" : `Available for ${billingPeriodLabel(data.settings)}`} action={invoiceMatchesPeriod ? "Review" : "Use period"} onClick={invoiceMatchesPeriod ? onOpenSettings : useBillingPeriod} icon={<CalendarDays size={18} />} />
+      <MetricCard label="Attributed usage value" value={formatMoney(totalValue, analytics?.settings.currency ?? costCurrency(data))} note={`${periodLabel} · ${analytics?.valuationBasis === "api-estimate" ? "OpenAI estimate" : "planning value"}, not invoice spend`} action={totalValue === null ? "Configure" : undefined} onClick={onOpenSettings} icon={<CircleDollarSign size={18} />} />
+      <MetricCard label="Value source" value={analytics?.valuationBasis === "api-estimate" ? "OpenAI estimate" : analytics?.valuationBasis === "reported" ? "Reported cost" : analytics?.valuationBasis === "mixed" ? "Mixed sources" : "Manual rate"} note={`${periodLabel} · see Analytics for provenance`} onClick={onViewAnalytics} icon={<CalendarDays size={18} />} />
       <MetricCard label="Active users" value={formatNumber(activeUsers)} note={periodLabel} icon={<Users size={18} />} />
       <MetricCard label="Average per active user" value={formatNumber(analytics?.totals.averageUsagePerActive ?? 0)} note={`${formatMoney(analytics?.totals.averageUsageValuePerActive ?? null, analytics?.settings.currency ?? data.settings.currency)} average value`} icon={<BarChart3 size={18} />} />
     </section>
@@ -410,9 +411,9 @@ function AnalyticsView({ data, importingUsage, onImportUsage, onOpenSettings }: 
   const [groupId, setGroupId] = useState("");
   const [entity, setEntity] = useState("");
   const [tab, setTab] = useState<AnalyticsTab>("groups");
+  const [analysisView, setAnalysisView] = useState<"budget" | "coverage">("budget");
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
   const [previousAnalytics, setPreviousAnalytics] = useState<AnalyticsData | null>(null);
-  const [billingAnalytics, setBillingAnalytics] = useState<AnalyticsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -435,17 +436,6 @@ function AnalyticsView({ data, importingUsage, onImportUsage, onOpenSettings }: 
     return () => controller.abort();
   }, [startDate, endDate, bucket, groupId, entity, data.lastSyncedAt, data.settings.pricePerCredit]);
 
-  useEffect(() => {
-    if (!data.settings.billingPeriodStart || !data.settings.billingPeriodEnd) return;
-    const controller = new AbortController();
-    const params = new URLSearchParams({ start: data.settings.billingPeriodStart, end: data.settings.billingPeriodEnd, bucket: "month" });
-    fetch(`/api/analytics?${params}`, { signal: controller.signal })
-      .then(async (response) => { const payload = await response.json() as AnalyticsData & { error?: string }; if (!response.ok) throw new Error(payload.error || "Billing reference usage could not be loaded."); return payload; })
-      .then(setBillingAnalytics)
-      .catch((reason) => { if (reason instanceof Error && reason.name !== "AbortError") setError(reason.message); });
-    return () => controller.abort();
-  }, [data.lastSyncedAt, data.settings.billingPeriodEnd, data.settings.billingPeriodStart]);
-
   function preset(days: number) { const end = todayIso(); setEndDate(end); setStartDate(daysBefore(end, days - 1)); }
   function useBillingRange() {
     if (data.settings.billingPeriodStart && data.settings.billingPeriodEnd) {
@@ -453,22 +443,19 @@ function AnalyticsView({ data, importingUsage, onImportUsage, onOpenSettings }: 
     } else onOpenSettings();
   }
   const rows = analytics ? tab === "groups" ? analytics.byGroup : tab === "entities" ? analytics.byEntity : analytics.byUser : [];
-  const allocationModel = invoiceAllocationModel(data.settings, billingAnalytics);
-  const invoiceRate = analytics?.unit === "usd" ? 1 : analytics?.unit === "credits" && allocationModel ? allocationModel.estimatedCostPerUsageCredit : null;
-  const previousInvoiceRate = previousAnalytics?.unit === "usd" ? 1 : previousAnalytics?.unit === "credits" && allocationModel ? allocationModel.estimatedCostPerUsageCredit : null;
-  const selectedInvoiceEstimate = analytics && invoiceRate !== null ? analytics.totals.usage * invoiceRate : null;
-  const previousInvoiceEstimate = previousAnalytics && previousInvoiceRate !== null ? previousAnalytics.totals.usage * previousInvoiceRate : null;
-  const costBasis = analytics?.unit === "usd" ? "Reported cost" : invoiceRate !== null ? "Estimated invoice" : "Billing cost";
+  const selectedCostEstimate = analytics?.totals.usageValue ?? null;
+  const previousCostEstimate = previousAnalytics?.totals.usageValue ?? null;
+  const costBasis = analytics?.valuationBasis === "reported" ? "Reported usage cost" : analytics?.valuationBasis === "api-estimate" ? "OpenAI usage estimate" : analytics?.valuationBasis === "manual" ? "Manual planning value" : analytics?.valuationBasis === "mixed" ? "Mixed-source usage value" : "Usage value unavailable";
   const selectedScope = [groupId ? data.groups.find((group) => group.id === groupId)?.name ?? "Selected group" : null, entity || null].filter(Boolean).join(" · ") || "All workspace members";
   const filtered = Boolean(groupId || entity);
   const selectionDays = inclusiveDays(startDate, endDate);
   const currentDay = todayIso();
   const elapsedDays = startDate > currentDay ? 0 : inclusiveDays(startDate, endDate < currentDay ? endDate : currentDay);
   const isOpenPeriod = startDate <= currentDay && endDate > currentDay;
-  const projectedInvoice = selectedInvoiceEstimate === null || elapsedDays === 0
+  const projectedInvoice = selectedCostEstimate === null || elapsedDays === 0
     ? null
-    : isOpenPeriod ? selectedInvoiceEstimate / elapsedDays * selectionDays : selectedInvoiceEstimate;
-  const dailyBurn = selectedInvoiceEstimate === null || elapsedDays === 0 ? null : selectedInvoiceEstimate / elapsedDays;
+    : isOpenPeriod ? selectedCostEstimate / elapsedDays * selectionDays : selectedCostEstimate;
+  const dailyBurn = selectedCostEstimate === null || elapsedDays === 0 ? null : selectedCostEstimate / elapsedDays;
   const budgetReferenceDays = data.settings.billingPeriodStart && data.settings.billingPeriodEnd
     ? inclusiveDays(data.settings.billingPeriodStart, data.settings.billingPeriodEnd)
     : 30;
@@ -477,18 +464,18 @@ function AnalyticsView({ data, importingUsage, onImportUsage, onOpenSettings }: 
     : null;
   const budgetUtilization = selectedBudget && projectedInvoice !== null ? projectedInvoice / selectedBudget : null;
   const budgetVariance = selectedBudget !== null && projectedInvoice !== null ? selectedBudget - projectedInvoice : null;
-  const priorDelta = percentDelta(selectedInvoiceEstimate, previousInvoiceEstimate);
+  const priorDelta = percentDelta(selectedCostEstimate, previousCostEstimate);
   const previousRange = previousPeriod(startDate, endDate);
   const scopedGroupName = groupId ? data.groups.find((group) => group.id === groupId)?.name : null;
   const scopedMembers = data.members.filter((member) => (!entity || member.entity === entity) && (!scopedGroupName || member.groups.includes(scopedGroupName)));
   const ungroupedMembers = scopedMembers.filter((member) => member.groups.length === 0).length;
   const missingProfiles = scopedMembers.filter((member) => member.peopleMatch !== "Matched").length;
   const directoryExceptions = scopedMembers.filter((member) => member.groups.length === 0 || member.peopleMatch !== "Matched").length;
-  const adoptionRate = analytics?.totals.totalMembers ? analytics.totals.activeUsers / analytics.totals.totalMembers : 0;
+  const adoptionRate = analytics?.totals.totalMembers ? (analytics.totals.currentActiveUsers ?? analytics.totals.activeUsers) / analytics.totals.totalMembers : 0;
   const topTenShare = analytics?.totals.usage
     ? analytics.byUser.slice(0, 10).reduce((sum, row) => sum + row.usage, 0) / analytics.totals.usage
     : 0;
-  const userCosts = invoiceRate === null || !analytics ? [] : analytics.byUser.filter((row) => row.usage > 0).map((row) => row.usage * invoiceRate);
+  const userCosts = !analytics ? [] : analytics.byUser.filter((row) => row.usage > 0 && row.usageValue !== null).map((row) => row.usageValue as number);
   const medianUserCost = percentile(userCosts, 0.5);
   const p90UserCost = percentile(userCosts, 0.9);
   const topGroup = analytics?.byGroup.find((row) => row.id !== "__unassigned__");
@@ -497,127 +484,160 @@ function AnalyticsView({ data, importingUsage, onImportUsage, onOpenSettings }: 
   const budgetTone = budgetUtilization === null ? "neutral" : budgetUtilization >= 1 ? "danger" : budgetUtilization * 100 >= data.settings.budgetAlertPercent ? "warning" : "good";
   const signals: Array<{ tone: "good" | "warning" | "danger" | "neutral"; title: string; detail: string }> = [];
   if (filtered) signals.push({ tone: "neutral", title: "Filtered contribution view", detail: "Workspace budget is intentionally not allocated to this group/entity scope." });
-  else if (selectedBudget === null) signals.push({ tone: "warning", title: "Budget target missing", detail: "Set a billing-cycle budget to see utilization, headroom, and alerts." });
+  if (analytics?.valuationBasis === "manual" || analytics?.valuationBasis === "mixed") signals.push({ tone: "warning", title: "Usage value is not billable cost", detail: "This selection includes manual valuation. Use OpenAI Billing or the issued invoice for payable spend." });
+  if (selectedBudget === null) signals.push({ tone: "warning", title: "Budget target missing", detail: "Set a billing-cycle budget to see utilization, headroom, and alerts." });
   else if (budgetUtilization !== null && budgetUtilization >= 1) signals.push({ tone: "danger", title: "Forecast above target", detail: `${formatMoney(Math.abs(budgetVariance ?? 0), analytics?.settings.currency ?? data.settings.currency)} over the prorated target.` });
   else if (budgetUtilization !== null && budgetUtilization * 100 >= data.settings.budgetAlertPercent) signals.push({ tone: "warning", title: "Budget alert threshold reached", detail: `${(budgetUtilization * 100).toFixed(1)}% of the prorated target at the current pace.` });
-  else if (budgetUtilization !== null) signals.push({ tone: "good", title: "Spend pace within target", detail: `${(budgetUtilization * 100).toFixed(1)}% of the prorated target at the current pace.` });
-  if (priorDelta !== null && priorDelta > 0.2) signals.push({ tone: "warning", title: "Cost accelerated", detail: `${(priorDelta * 100).toFixed(1)}% above the preceding ${selectionDays}-day period.` });
-  else if (priorDelta !== null && priorDelta <= 0) signals.push({ tone: "good", title: "Cost stable or lower", detail: `${Math.abs(priorDelta * 100).toFixed(1)}% below the preceding ${selectionDays}-day period.` });
+  else if (budgetUtilization !== null) signals.push({ tone: "good", title: "Usage-value pace within target", detail: `${(budgetUtilization * 100).toFixed(1)}% of the prorated target at the current pace.` });
+  if (priorDelta !== null && priorDelta > 0.2) signals.push({ tone: "warning", title: "Usage value accelerated", detail: `${(priorDelta * 100).toFixed(1)}% above the preceding ${selectionDays}-day period.` });
+  else if (priorDelta !== null && priorDelta <= 0) signals.push({ tone: "good", title: "Usage value stable or lower", detail: `${Math.abs(priorDelta * 100).toFixed(1)}% below the preceding ${selectionDays}-day period.` });
   if (topTenShare > 0.6) signals.push({ tone: "warning", title: "Usage is concentrated", detail: `Top 10 active members account for ${(topTenShare * 100).toFixed(1)}% of selected usage.` });
   if (ungroupedMembers > 0) signals.push({ tone: "warning", title: `${ungroupedMembers} members are ungrouped`, detail: "Their usage is visible but lacks a management allocation." });
   if (missingProfiles > 0) signals.push({ tone: "neutral", title: `${missingProfiles} People API profiles need review`, detail: "Role and entity reporting may be incomplete for these members." });
   if (syncAgeHours !== null && syncAgeHours > 24) signals.push({ tone: "warning", title: "Data may be stale", detail: `Last directory sync was ${Math.floor(syncAgeHours)} hours ago.` });
   return <div className="page-content analytics-page">
-    <PageIntro eyebrow="Budget intelligence" title="Analytics" description="Control spend with period forecasts, budget variance, concentration, and accountable group, entity, and member views." actions={<><label className={`button button--secondary file-button${importingUsage ? " disabled" : ""}`}>{importingUsage ? <LoaderCircle className="spin" size={16} /> : <FileUp size={16} />}{importingUsage ? "Importing" : "Import history"}<input type="file" accept=".csv,text/csv" disabled={importingUsage} onChange={(event) => { const file = event.target.files?.[0]; if (file) onImportUsage(file); event.target.value = ""; }} /></label><button className="button button--secondary" onClick={onOpenSettings}><Settings size={16} />Budget & billing</button></>} />
+    <PageIntro eyebrow="Budget intelligence" title="Analytics" description="Review attributed usage value, planning forecasts, budget variance, and group, entity, and member contributions. Invoice spend remains in OpenAI Billing." actions={<><label className={`button button--secondary file-button${importingUsage ? " disabled" : ""}`}>{importingUsage ? <LoaderCircle className="spin" size={16} /> : <FileUp size={16} />}{importingUsage ? "Importing" : "Import history"}<input type="file" accept=".csv,text/csv" disabled={importingUsage} onChange={(event) => { const file = event.target.files?.[0]; if (file) onImportUsage(file); event.target.value = ""; }} /></label><button className="button button--secondary" onClick={onOpenSettings}><Settings size={16} />Budget & billing</button></>} />
+    <div className="analytics-subviews segmented-filter" aria-label="Analytics view"><button className={analysisView === "budget" ? "active" : ""} aria-pressed={analysisView === "budget"} onClick={() => setAnalysisView("budget")}>Budget & usage</button><button className={analysisView === "coverage" ? "active" : ""} aria-pressed={analysisView === "coverage"} onClick={() => setAnalysisView("coverage")}>N-1 coverage</button></div>
     <section className="analytics-controls panel">
       <div className="preset-buttons"><button onClick={() => preset(7)}>7D</button><button onClick={() => preset(30)}>30D</button><button onClick={() => preset(90)}>90D</button><button onClick={() => { const end = todayIso(); setEndDate(end); setStartDate(end.slice(0, 8) + "01"); }}>MTD</button></div>
       <label><span>From</span><input type="date" value={startDate} max={endDate} onChange={(event) => setStartDate(event.target.value)} /></label>
       <label><span>To</span><input type="date" value={endDate} min={startDate} onChange={(event) => setEndDate(event.target.value)} /></label>
       <label><span>Group</span><select value={groupId} onChange={(event) => setGroupId(event.target.value)}><option value="">All groups</option>{data.groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label>
       <label><span>Entity</span><select value={entity} onChange={(event) => setEntity(event.target.value)}><option value="">All entities</option>{(["Allegro", "eBilet", "Ceneo", "Unknown"] as Entity[]).map((name) => <option key={name}>{name}</option>)}</select></label>
-      <div className="bucket-control"><span>Interval</span><div className="segmented-filter">{(["day", "week", "month"] as AnalyticsBucket[]).map((value) => <button key={value} className={bucket === value ? "active" : ""} onClick={() => setBucket(value)}>{value === "day" ? "Daily" : value === "week" ? "Weekly" : "Monthly"}</button>)}</div></div>
+      {analysisView === "budget" && <div className="bucket-control"><span>Interval</span><div className="segmented-filter">{(["day", "week", "month"] as AnalyticsBucket[]).map((value) => <button key={value} className={bucket === value ? "active" : ""} onClick={() => setBucket(value)}>{value === "day" ? "Daily" : value === "week" ? "Weekly" : "Monthly"}</button>)}</div></div>}
     </section>
+    {analysisView === "coverage" ? <StructureCoverage data={data} startDate={startDate} endDate={endDate} entity={entity} groupId={groupId} /> : <>
     {error && <div className="analytics-warning analytics-warning--error"><Activity size={16} />{error}</div>}
     {analytics?.warning && <div className="analytics-warning"><CalendarDays size={16} />{analytics.warning}</div>}
     {loading && !analytics ? <div className="analytics-loading"><LoaderCircle className="spin" size={22} />Loading analytics</div> : analytics && <>
       {analytics.totals.usage === 0 && <div className="history-empty-banner"><span className="history-empty-icon"><FileUp size={18} /></span><div><strong>No historical usage has been loaded</strong><p>Run Sync directory with an Admin key that has Codex analytics API: Read. CSV import remains available as a fallback for attributed history.</p></div><label className={`button button--primary file-button${importingUsage ? " disabled" : ""}`}>{importingUsage ? <LoaderCircle className="spin" size={15} /> : <FileUp size={15} />}{importingUsage ? "Importing" : "Import CSV"}<input type="file" accept=".csv,text/csv" disabled={importingUsage} onChange={(event) => { const file = event.target.files?.[0]; if (file) onImportUsage(file); event.target.value = ""; }} /></label></div>}
       <section className="analytics-kpis">
-        <MetricCard label={`${costBasis} · selection`} value={selectedInvoiceEstimate === null ? "Unavailable" : formatMoney(selectedInvoiceEstimate, analytics.settings.currency)} note={`${analytics.startDate} – ${analytics.endDate} · ${selectedScope}`} action="Use billing period" onClick={useBillingRange} icon={<CircleDollarSign size={18} />} />
-        <MetricCard label="Period-end forecast" value={projectedInvoice === null ? "Unavailable" : formatMoney(projectedInvoice, analytics.settings.currency)} note={isOpenPeriod ? `${elapsedDays} of ${selectionDays} days elapsed` : "Completed selection · equals period cost"} icon={<Gauge size={18} />} />
+        <MetricCard label={`${costBasis} · selection`} value={formatMoney(selectedCostEstimate, analytics.settings.currency)} note={`${analytics.startDate} – ${analytics.endDate} · ${selectedScope} · not an invoice`} action="Use billing period" onClick={useBillingRange} icon={<CircleDollarSign size={18} />} />
+        <MetricCard label="Usage-value forecast" value={formatMoney(projectedInvoice, analytics.settings.currency)} note={isOpenPeriod ? `${elapsedDays} of ${selectionDays} days elapsed` : "Completed selection · same as period value"} icon={<Gauge size={18} />} />
         <MetricCard label="Budget utilization" value={filtered ? "Workspace only" : budgetUtilization === null ? "Not set" : `${(budgetUtilization * 100).toFixed(1)}%`} note={filtered ? "Remove filters for workspace target" : selectedBudget === null ? "Configure billing-cycle budget" : `${formatMoney(selectedBudget, analytics.settings.currency)} prorated target`} action={selectedBudget === null && !filtered ? "Configure" : undefined} onClick={onOpenSettings} icon={<ShieldCheck size={18} />} />
         <MetricCard label="Vs previous period" value={priorDelta === null ? "No baseline" : `${priorDelta > 0 ? "+" : ""}${(priorDelta * 100).toFixed(1)}%`} note={`${previousRange.startDate} – ${previousRange.endDate}`} icon={priorDelta !== null && priorDelta > 0 ? <TrendingUp size={18} /> : <TrendingDown size={18} />} />
         <MetricCard label={`${analytics.unit} used`} value={formatNumber(analytics.totals.usage)} note={`${formatNumber(analytics.totals.messages)} turns · ${analytics.source}`} icon={<Activity size={18} />} />
-        <MetricCard label="Active adoption" value={`${(adoptionRate * 100).toFixed(1)}%`} note={`${analytics.totals.activeUsers} of ${analytics.totals.totalMembers} scoped members`} icon={<Users size={18} />} />
-        <MetricCard label="Avg cost / active" value={selectedInvoiceEstimate === null ? "Unavailable" : formatMoney(selectedInvoiceEstimate / Math.max(analytics.totals.activeUsers, 1), analytics.settings.currency)} note={`${formatNumber(analytics.totals.averageUsagePerActive)} ${analytics.unit} / active`} icon={<BarChart3 size={18} />} />
-        <MetricCard label="Daily burn" value={formatMoney(dailyBurn, analytics.settings.currency)} note={`${elapsedDays || selectionDays} observed days · ${costBasis.toLowerCase()}`} icon={<CalendarDays size={18} />} />
+        <MetricCard label="Active adoption" value={`${(adoptionRate * 100).toFixed(1)}%`} note={`${analytics.totals.currentActiveUsers ?? analytics.totals.activeUsers} of ${analytics.totals.totalMembers} current scoped members`} icon={<Users size={18} />} />
+        <MetricCard label="Avg value / active" value={selectedCostEstimate === null ? "Unavailable" : formatMoney(selectedCostEstimate / Math.max(analytics.totals.activeUsers, 1), analytics.settings.currency)} note={`${formatNumber(analytics.totals.averageUsagePerActive)} ${analytics.unit} / active`} icon={<BarChart3 size={18} />} />
+        <MetricCard label="Daily value pace" value={formatMoney(dailyBurn, analytics.settings.currency)} note={`${elapsedDays || selectionDays} observed days · ${costBasis.toLowerCase()}`} icon={<CalendarDays size={18} />} />
       </section>
       <section className="budget-command-grid">
-        <article className={`panel budget-position budget-position--${budgetTone}`}><div className="panel-heading"><div><span className="eyebrow">Budget position</span><h2>{filtered ? "Scoped contribution" : "Workspace forecast"}</h2></div><span className={`budget-status budget-status--${budgetTone}`}>{budgetTone === "danger" ? "Over target" : budgetTone === "warning" ? "Needs attention" : budgetTone === "good" ? "On track" : "Target needed"}</span></div>{selectedBudget !== null && projectedInvoice !== null ? <><div className="budget-progress-copy"><strong>{formatMoney(projectedInvoice, analytics.settings.currency)}</strong><span>forecast of {formatMoney(selectedBudget, analytics.settings.currency)}</span></div><div className="budget-progress" role="progressbar" aria-label="Budget utilization" aria-valuenow={Math.round((budgetUtilization ?? 0) * 100)}><span style={{ width: `${Math.min(100, Math.max(0, (budgetUtilization ?? 0) * 100))}%` }} /></div><div className="budget-position-stats"><span><small>Selected cost</small><strong>{formatMoney(selectedInvoiceEstimate, analytics.settings.currency)}</strong></span><span><small>{budgetVariance !== null && budgetVariance < 0 ? "Over target" : "Headroom"}</small><strong>{formatMoney(budgetVariance === null ? null : Math.abs(budgetVariance), analytics.settings.currency)}</strong></span><span><small>Alert threshold</small><strong>{data.settings.budgetAlertPercent}%</strong></span></div></> : <div className="budget-empty"><CircleDollarSign size={22} /><div><strong>{filtered ? "Budget stays at workspace level" : "Add a billing-cycle budget"}</strong><p>{filtered ? "Use this scope to understand contribution, then remove filters to assess the workspace target." : "Codexlens will prorate it to the selected period and flag forecast variance."}</p></div>{!filtered && <button className="button button--secondary" onClick={onOpenSettings}>Configure</button>}</div>}</article>
+        <article className={`panel budget-position budget-position--${budgetTone}`}><div className="panel-heading"><div><span className="eyebrow">Planning budget comparison · not invoice spend</span><h2>{filtered ? "Scoped contribution" : "Workspace forecast"}</h2></div><span className={`budget-status budget-status--${budgetTone}`}>{budgetTone === "danger" ? "Over target" : budgetTone === "warning" ? "Needs attention" : budgetTone === "good" ? "On track" : "Target needed"}</span></div>{selectedBudget !== null && projectedInvoice !== null ? <><div className="budget-progress-copy"><strong>{formatMoney(projectedInvoice, analytics.settings.currency)}</strong><span>forecast of {formatMoney(selectedBudget, analytics.settings.currency)}</span></div><div className="budget-progress" role="progressbar" aria-label="Budget utilization" aria-valuenow={Math.round((budgetUtilization ?? 0) * 100)}><span style={{ width: `${Math.min(100, Math.max(0, (budgetUtilization ?? 0) * 100))}%` }} /></div><div className="budget-position-stats"><span><small>Selected usage value</small><strong>{formatMoney(selectedCostEstimate, analytics.settings.currency)}</strong></span><span><small>{budgetVariance !== null && budgetVariance < 0 ? "Over target" : "Headroom"}</small><strong>{formatMoney(budgetVariance === null ? null : Math.abs(budgetVariance), analytics.settings.currency)}</strong></span><span><small>Alert threshold</small><strong>{data.settings.budgetAlertPercent}%</strong></span></div></> : <div className="budget-empty"><CircleDollarSign size={22} /><div><strong>{filtered ? "Budget stays at workspace level" : "Add a billing-cycle budget"}</strong><p>{filtered ? "Use this scope to understand contribution, then remove filters to assess the workspace target." : "Codexlens will prorate it to the selected period and flag forecast variance."}</p></div>{!filtered && <button className="button button--secondary" onClick={onOpenSettings}>Configure</button>}</div>}</article>
         <article className="panel budget-signals"><div className="panel-heading"><div><span className="eyebrow">Attention queue</span><h2>Budget signals</h2></div><span className="source-chip">{signals.filter((signal) => signal.tone === "danger" || signal.tone === "warning").length} to review</span></div><div className="signal-list">{signals.slice(0, 5).map((signal, index) => <div className={`signal-row signal-row--${signal.tone}`} key={`${signal.title}-${index}`}><span>{signal.tone === "danger" || signal.tone === "warning" ? <AlertTriangle size={15} /> : <Check size={15} />}</span><div><strong>{signal.title}</strong><small>{signal.detail}</small></div></div>)}{signals.length === 0 && <div className="budget-empty"><Check size={22} /><div><strong>No budget exceptions</strong><p>The selected scope has no material alerts.</p></div></div>}</div></article>
       </section>
       <section className="panel finance-stat-strip"><span><small>Top 10 usage share</small><strong>{(topTenShare * 100).toFixed(1)}%</strong></span><span><small>Median active user</small><strong>{formatMoney(medianUserCost, analytics.settings.currency)}</strong></span><span><small>P90 active user</small><strong>{formatMoney(p90UserCost, analytics.settings.currency)}</strong></span><span><small>Top group</small><strong>{topGroup?.label ?? "—"}</strong></span><span><small>Top entity</small><strong>{topEntity?.label ?? "—"}</strong></span><span><small>Directory exceptions</small><strong>{directoryExceptions}</strong><em>{ungroupedMembers} ungrouped · {missingProfiles} profiles</em></span></section>
       <BillingSnapshot settings={analytics.settings} onOpenSettings={onOpenSettings} />
-      <section className="panel billing-allocation"><div className="panel-heading"><div><span className="eyebrow">Selected period estimate</span><h2>Invoice allocation model</h2></div><span className="source-chip">{allocationModel ? allocationModel.referencePeriod : "Billing basis unavailable"}</span></div>{allocationModel ? <><p className="table-note">The selected estimate applies the observed billing-period overage share to the selected credits. It is an analytical allocation, not an issued invoice.</p><div className="billing-snapshot-grid"><span><small>Selected estimate</small><strong>{selectedInvoiceEstimate === null ? "Unavailable" : formatMoney(selectedInvoiceEstimate, data.settings.currency)}</strong></span><span><small>Reference invoice</small><strong>{formatMoney(allocationModel.referenceInvoice, data.settings.currency)}</strong></span><span><small>Reference usage</small><strong>{formatNumber(allocationModel.referenceUsage)} credits</strong></span><span><small>Calibrated overage share</small><strong>{(allocationModel.overageShare * 100).toFixed(1)}%</strong></span></div></> : <div className="empty-state"><CircleDollarSign size={22} /><strong>Invoice allocation unavailable</strong><p>Add a billing period, unbilled overage, price per credit, and usage for that reference period.</p></div>}</section>
-      <AnalyticsTrend analytics={analytics} invoiceRate={invoiceRate} />
+      <section className="panel billing-allocation"><div className="panel-heading"><div><span className="eyebrow">Reconciliation</span><h2>Why this differs from Billing</h2></div><span className="source-chip">{analytics.valuationBasis === "api-estimate" ? "OpenAI usage estimate" : "Planning value"}</span></div><p className="table-note">The selected USD value comes from {analytics.source}. It values activity, not what OpenAI will invoice. The unified feed covers ChatGPT Work and Codex, but committed-credit offsets, other billable items, overage and contract adjustments change the payable amount. The manual overage snapshot below is a point-in-time balance and is not allocated across users or groups.</p><div className="billing-snapshot-grid"><span><small>Selected usage value</small><strong>{formatMoney(selectedCostEstimate, analytics.settings.currency)}</strong></span><span><small>Source</small><strong>{analytics.source}</strong></span><span><small>Value basis</small><strong>{costBasis}</strong></span><span><small>Selected period</small><strong>{analytics.startDate} – {analytics.endDate}</strong></span></div></section>
+      <AnalyticsTrend analytics={analytics} />
+      <AnalyticsRoleSplit rows={analytics.byRole} analytics={analytics} />
       <section className="panel analytics-breakdown">
         <div className="panel-heading"><div><span className="eyebrow">Breakdown</span><h2>Where usage goes</h2></div><div className="analytics-tabs">{(["users", "groups", "entities"] as AnalyticsTab[]).map((value) => <button key={value} className={tab === value ? "active" : ""} onClick={() => setTab(value)}>By {value}</button>)}</div></div>
-        {tab === "groups" && <p className="table-note">Group estimates use the calibrated overage share from {allocationModel?.referencePeriod ?? "the saved billing period"}. Historical usage uses current membership; groups overlap, so their estimates must not be added together.</p>}
-        <AnalyticsTable rows={rows} analytics={analytics} kind={tab} invoiceRate={invoiceRate} />
+        {tab === "groups" && <p className="table-note">Usage is attributed using current group membership. Former members have no current group, and people in multiple groups appear in each group; group values must not be added together. The workspace total counts each usage row once.</p>}
+        <AnalyticsTable rows={rows} analytics={analytics} kind={tab} />
       </section>
+    </>}
     </>}
   </div>;
 }
 
-function AnalyticsTrend({ analytics, invoiceRate }: { analytics: AnalyticsData; invoiceRate: number | null }) {
-  const [metric, setMetric] = useState<TrendMetric>(invoiceRate !== null ? "invoice" : analytics.valuationCoverage === "complete" ? "value" : "usage");
-  const effectiveMetric: TrendMetric = metric === "invoice" && invoiceRate === null ? analytics.valuationCoverage === "complete" ? "value" : "usage" : metric;
-  const valueFor = (point: AnalyticsData["series"][number]) => effectiveMetric === "invoice" && invoiceRate !== null
-    ? point.usage * invoiceRate
-    : effectiveMetric === "value" ? point.usageValue ?? 0 : point.usage;
+function AnalyticsTrend({ analytics }: { analytics: AnalyticsData }) {
+  const [metric, setMetric] = useState<TrendMetric>(analytics.valuationCoverage === "complete" ? "value" : "usage");
+  const effectiveMetric: TrendMetric = metric === "value" && analytics.valuationCoverage !== "complete" ? "usage" : metric;
+  const valueFor = (point: AnalyticsData["series"][number]) => effectiveMetric === "value" ? point.usageValue ?? 0 : point.usage;
   const max = Math.max(...analytics.series.map(valueFor), 1);
   const labelEvery = Math.max(1, Math.ceil(analytics.series.length / 8));
-  const titleMetric = effectiveMetric === "invoice" ? analytics.unit === "usd" ? "reported cost" : "estimated invoice" : effectiveMetric === "value" ? "usage value" : "usage";
-  return <section className="panel analytics-trend"><div className="panel-heading"><div><span className="eyebrow">Over time</span><h2>{analytics.bucket === "day" ? "Daily" : analytics.bucket === "week" ? "Weekly" : "Monthly"} {titleMetric}</h2></div><div className="trend-metric-tabs"><button className={effectiveMetric === "invoice" ? "active" : ""} disabled={invoiceRate === null} onClick={() => setMetric("invoice")}>Invoice cost</button><button className={effectiveMetric === "value" ? "active" : ""} disabled={analytics.valuationCoverage !== "complete"} onClick={() => setMetric("value")}>Usage value</button><button className={effectiveMetric === "usage" ? "active" : ""} onClick={() => setMetric("usage")}>Usage</button></div></div><div className="analytics-chart-scroll"><div className="analytics-chart" style={{ gridTemplateColumns: `repeat(${Math.max(analytics.series.length, 1)}, minmax(18px, 1fr))` }} role="img" aria-label={`${analytics.bucket} ${titleMetric} trend`}>
+  const titleMetric = effectiveMetric === "value" ? "usage value" : "usage";
+  return <section className="panel analytics-trend"><div className="panel-heading"><div><span className="eyebrow">Over time</span><h2>{analytics.bucket === "day" ? "Daily" : analytics.bucket === "week" ? "Weekly" : "Monthly"} {titleMetric}</h2></div><div className="trend-metric-tabs"><button className={effectiveMetric === "value" ? "active" : ""} disabled={analytics.valuationCoverage !== "complete"} onClick={() => setMetric("value")}>Usage value</button><button className={effectiveMetric === "usage" ? "active" : ""} onClick={() => setMetric("usage")}>Usage</button></div></div><div className="analytics-chart-scroll"><div className="analytics-chart" style={{ gridTemplateColumns: `repeat(${Math.max(analytics.series.length, 1)}, minmax(18px, 1fr))` }} role="img" aria-label={`${analytics.bucket} ${titleMetric} trend`}>
     {analytics.series.map((point, index) => { const value = valueFor(point); const display = effectiveMetric === "usage" ? `${formatNumber(value)} ${analytics.unit}` : formatMoney(value, analytics.settings.currency); return <div className="analytics-column" key={point.key} title={`${point.label}: ${display}`}><div className="analytics-bar-track"><span style={{ height: `${value === 0 ? 2 : Math.max(5, (value / max) * 100)}%` }} /></div><small>{index % labelEvery === 0 || index === analytics.series.length - 1 ? point.label : ""}</small></div>; })}
   </div></div><div className="chart-footnote"><span><i />{effectiveMetric === "usage" ? analytics.unit : `${titleMetric} · ${analytics.settings.currency}`}</span><p>{analytics.startDate} through {analytics.endDate} · Source: {analytics.source}</p></div></section>;
 }
 
-function AnalyticsTable({ rows, analytics, kind, invoiceRate }: { rows: AnalyticsBreakdownRow[]; analytics: AnalyticsData; kind: AnalyticsTab; invoiceRate: number | null }) {
+function AnalyticsRoleSplit({ rows, analytics }: { rows: AnalyticsBreakdownRow[]; analytics: AnalyticsData }) {
+  const chartRows = rows.filter((row) => row.memberCount > 0).sort((a, b) => roleFamilies.indexOf(a.label as typeof roleFamilies[number]) - roleFamilies.indexOf(b.label as typeof roleFamilies[number])).map((row) => ({ id: row.id, label: row.label, people: row.memberCount, activeUsers: row.activeUsers }));
+  const totalPeople = Math.max(chartRows.reduce((sum, row) => sum + row.people, 0), 1);
+  const maxPeople = Math.max(...chartRows.map((row) => row.people), 1);
+  if (!chartRows.length) return <section className="panel analytics-role-split"><div className="panel-heading"><div><span className="eyebrow">People API job-family split</span><h2>People by job family</h2></div></div><div className="empty-state"><BarChart3 size={22} /><strong>No people in this selection</strong><p>Choose another entity or group filter.</p></div></section>;
+  return <section className="panel analytics-role-split"><div className="panel-heading"><div><span className="eyebrow">People API job-family split</span><h2>People by job family</h2></div><span className="source-chip">{formatNumber(totalPeople)} people</span></div><p className="table-note">People API roles are grouped into Data, Software, Product, Design, and Other. Counts and percentages use the current synced directory within the selected entity and group scope; usage and cost remain period-based below.</p><div className="role-split-list">{chartRows.map((row) => <div className="role-split-row" key={row.id}><div className="role-split-label"><strong>{row.label}</strong><small>{formatNumber(row.activeUsers)} active in period</small></div><div className="role-split-track"><span style={{ width: `${Math.max(2, (row.people / maxPeople) * 100)}%` }} /></div><strong className="role-split-value">{formatNumber(row.people)} · {((row.people / totalPeople) * 100).toFixed(1)}%</strong></div>)}</div><div className="chart-footnote"><span><i />people · share of selected scope</span><p>{analytics.startDate} through {analytics.endDate} · current directory snapshot</p></div></section>;
+}
+
+function AnalyticsTable({ rows, analytics, kind }: { rows: AnalyticsBreakdownRow[]; analytics: AnalyticsData; kind: AnalyticsTab }) {
   if (!rows.length) return <div className="empty-state"><BarChart3 size={22} /><strong>No usage in this selection</strong><p>Choose another period or import attributed usage rows.</p></div>;
-  return <div className="table-scroll"><table><thead><tr><th>{kind === "users" ? "Person" : kind === "groups" ? "Group" : "Entity"}</th><th>Usage</th><th>Usage value</th><th>{analytics.unit === "usd" ? "Reported cost" : "Est. invoice"}</th><th>Selection share</th><th>Active users</th><th>Cost / active</th><th>Messages</th></tr></thead><tbody>{rows.map((row) => { const rowInvoice = invoiceRate === null ? null : row.usage * invoiceRate; return <tr key={row.id}><td>{kind === "entities" && <span className="entity-indicator" style={{ background: entityColors[row.label as Entity] ?? entityColors.Unknown }} />}<span><strong>{row.label}</strong><small>{row.sublabel ?? `${row.memberCount} directory members`}</small></span></td><td><strong className="usage-cell">{formatNumber(row.usage)}</strong></td><td>{formatMoney(row.usageValue, analytics.settings.currency)}</td><td><strong>{rowInvoice === null ? "Unavailable" : formatMoney(rowInvoice, analytics.settings.currency)}</strong></td><td>{analytics.totals.usage ? `${((row.usage / analytics.totals.usage) * 100).toFixed(1)}%` : "0%"}</td><td>{row.activeUsers}</td><td>{formatMoney(rowInvoice === null ? null : rowInvoice / Math.max(row.activeUsers, 1), analytics.settings.currency)}</td><td>{formatNumber(row.messages)}</td></tr>; })}</tbody></table></div>;
+  return <div className="table-scroll"><table><thead><tr><th>{kind === "users" ? "Person" : kind === "groups" ? "Group" : "Entity"}</th><th>Usage</th><th>Attributed value</th><th>Selection usage share</th><th>Active users</th><th>Value / active</th><th>Messages</th></tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td>{kind === "entities" && <span className="entity-indicator" style={{ background: entityColors[row.label as Entity] ?? entityColors.Unknown }} />}<span><strong>{row.label}</strong><small>{row.sublabel ?? `${row.memberCount} directory members`}</small></span></td><td><strong className="usage-cell">{formatNumber(row.usage)}</strong></td><td>{formatMoney(row.usageValue, analytics.settings.currency)}</td><td>{analytics.totals.usage ? `${((row.usage / analytics.totals.usage) * 100).toFixed(1)}%` : "0%"}</td><td>{row.activeUsers}</td><td>{formatMoney(row.usageValue === null ? null : row.usageValue / Math.max(row.activeUsers, 1), analytics.settings.currency)}</td><td>{formatNumber(row.messages)}</td></tr>)}</tbody></table></div>;
 }
 
 function BillingSnapshot({ settings, onOpenSettings }: { settings: AppSettings; onOpenSettings: () => void }) {
-  const spend = estimatedInvoice(settings);
+  const spend = manualOverageValue(settings);
   const overageHeadroom = settings.workspaceOverageLimitCredits === null || settings.unbilledOverageCredits === null ? null : settings.workspaceOverageLimitCredits - settings.unbilledOverageCredits;
   const hasSnapshot = settings.currentCreditBalance !== null || settings.unbilledOverageCredits !== null || settings.workspaceOverageLimitCredits !== null || settings.billingPeriodStart || settings.billingPeriodEnd;
-  return <section className="panel billing-snapshot"><div className="panel-heading"><div><span className="eyebrow">Workspace billing</span><h2>OpenAI Billing snapshot</h2></div><button className="text-button" onClick={onOpenSettings}>{hasSnapshot ? "Update snapshot" : "Add snapshot"}<ChevronRight size={14} /></button></div><p className="table-note">Entered manually from OpenAI Billing. The workspace-level overage calibrates cost estimates; committed credit balance, budget target, and usage value remain distinct concepts.</p><div className="billing-snapshot-grid billing-snapshot-grid--six"><span><small>Current credit balance</small><strong>{settings.currentCreditBalance === null ? "Not recorded" : formatNumber(settings.currentCreditBalance)}</strong></span><span><small>Unbilled overage</small><strong>{settings.unbilledOverageCredits === null ? "Not recorded" : `${formatNumber(settings.unbilledOverageCredits)} credits`}</strong></span><span><small>Overage limit</small><strong>{settings.workspaceOverageLimitCredits === null ? "Not recorded" : `${formatNumber(settings.workspaceOverageLimitCredits)} credits`}</strong></span><span><small>Overage headroom</small><strong>{overageHeadroom === null ? "Not recorded" : `${formatNumber(Math.abs(overageHeadroom))} ${overageHeadroom < 0 ? "over" : "credits"}`}</strong></span><span><small>Estimated invoice (overage)</small><strong>{formatMoney(spend, settings.currency)}</strong></span><span><small>Billing period</small><strong>{settings.billingPeriodStart || settings.billingPeriodEnd ? `${settings.billingPeriodStart ?? "—"} – ${settings.billingPeriodEnd ?? "—"}` : "Not recorded"}</strong></span></div></section>;
+  return <section className="panel billing-snapshot"><div className="panel-heading"><div><span className="eyebrow">Point-in-time manual entry</span><h2>OpenAI Billing snapshot</h2></div><button className="text-button" onClick={onOpenSettings}>{hasSnapshot ? "Update snapshot" : "Add snapshot"}<ChevronRight size={14} /></button></div><p className="table-note">Entered manually from OpenAI Billing on {settings.billingSnapshotAt?.slice(0, 10) ?? "an unknown date"}. It is not historical invoice data and is never spread across people or groups.</p><div className="billing-snapshot-grid billing-snapshot-grid--six"><span><small>Current credit balance</small><strong>{settings.currentCreditBalance === null ? "Not recorded" : formatNumber(settings.currentCreditBalance)}</strong></span><span><small>Unbilled overage</small><strong>{settings.unbilledOverageCredits === null ? "Not recorded" : `${formatNumber(settings.unbilledOverageCredits)} credits`}</strong></span><span><small>Overage limit</small><strong>{settings.workspaceOverageLimitCredits === null ? "Not recorded" : `${formatNumber(settings.workspaceOverageLimitCredits)} credits`}</strong></span><span><small>Overage headroom</small><strong>{overageHeadroom === null ? "Not recorded" : `${formatNumber(Math.abs(overageHeadroom))} ${overageHeadroom < 0 ? "over" : "credits"}`}</strong></span><span><small>Unbilled overage × rate</small><strong>{formatMoney(spend, settings.currency)}</strong></span><span><small>Saved period label</small><strong>{billingPeriodLabel(settings)}</strong></span></div></section>;
 }
 
-function MembersView({ data, members, totalMembers, entity, query, onEntityChange, onQueryChange, onSelectMember }: { data: DashboardData; members: Member[]; totalMembers: number; entity: EntityFilter; query: string; onEntityChange: (entity: EntityFilter) => void; onQueryChange: (query: string) => void; onSelectMember: (member: Member) => void }) {
-  const [groupFilter, setGroupFilter] = useState("all");
-  const [profileFilter, setProfileFilter] = useState("all");
-  const visibleMembers = members.filter((member) => {
-    const matchesGroup = groupFilter === "all" || (groupFilter === "unassigned" && member.groups.length === 0) || (groupFilter === "multiple" && member.groups.length > 1) || (groupFilter.startsWith("group:") && member.groups.includes(groupFilter.slice("group:".length)));
-    const matchesProfile = profileFilter === "all" || (profileFilter === "missing" && member.peopleMatch !== "Matched") || (profileFilter === "matched" && member.peopleMatch === "Matched");
-    return matchesGroup && matchesProfile;
-  });
-  return <div className="page-content">
-    <PageIntro eyebrow="Directory" title="Members" description="Filter identities by entity, People API profile, and current group membership." actions={<><a className="button button--secondary" href="/api/export"><Download size={16} />Export</a><a className="button button--primary" href="https://admin.openai.com/" target="_blank" rel="noreferrer"><ExternalLink size={16} />Open Admin Console</a></>} />
-    <div className="filters-panel members-filters">
-      <label className="search-field"><Search size={16} /><input value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder="Search people, roles or groups" /><kbd>⌘ K</kbd></label>
-      <div className="filter-divider" />
-      <div className="segmented-filter">{(["All", "Allegro", "eBilet", "Ceneo", "Unknown"] as EntityFilter[]).map((value) => <button key={value} className={entity === value ? "active" : ""} onClick={() => onEntityChange(value)}>{value}</button>)}</div>
-      <label className="member-filter-select"><span>Groups</span><select value={groupFilter} onChange={(event) => setGroupFilter(event.target.value)}><option value="all">All memberships</option><option value="unassigned">Not grouped</option><option value="multiple">More than one group</option>{data.groups.map((group) => <option key={group.id} value={`group:${group.name}`}>{group.name}</option>)}</select></label>
-      <label className="member-filter-select"><span>People API</span><select value={profileFilter} onChange={(event) => setProfileFilter(event.target.value)}><option value="all">All profiles</option><option value="missing">Missing or ambiguous</option><option value="matched">Matched</option></select></label>
-      <span className="result-count">{visibleMembers.length} of {totalMembers}</span>
-    </div>
-    <section className="panel members-table"><div className="table-scroll"><table><thead><tr><th>Person</th><th>Entity</th><th>People API role</th><th>Groups</th><th>Usage</th><th>Usage value</th><th>Status</th><th /></tr></thead><tbody>{visibleMembers.map((member) => <tr key={member.id} onClick={() => onSelectMember(member)}><td><span className="avatar">{initials(member.name)}</span><span><strong>{member.name}</strong><small>{member.email}</small></span></td><td><span className="entity-pill"><i style={{ background: entityColors[member.entity] }} />{member.entity}</span></td><td>{member.peopleRole ? <span className="role-cell"><strong>{member.peopleRole}</strong><small>{member.department || "—"}</small></span> : <span className="pill pill--warning">Profile missing</span>}</td><td><div className="group-tags">{member.groups.slice(0, 2).map((group) => <span key={group}>{group}</span>)}{member.groups.length > 2 && <span>+{member.groups.length - 2}</span>}{member.groups.length === 0 && <small>Unassigned</small>}</div></td><td><strong className="usage-cell">{formatNumber(member.usage)}</strong></td><td>{formatMoney(usageValue(member.usage, data), data.settings.currency)}</td><td><span className={`pill ${member.status === "Active" ? "pill--green" : "pill--neutral"}`}>{member.status}</span></td><td><ChevronRight size={15} /></td></tr>)}</tbody></table></div>{visibleMembers.length === 0 && <div className="empty-state"><Search size={22} /><strong>No members found</strong><p>Try different search, entity, profile, or membership filters.</p></div>}</section>
+function MembersView(props: { data: DashboardData; members: Member[]; totalMembers: number; entity: EntityFilter; query: string; onEntityChange: (entity: EntityFilter) => void; onQueryChange: (query: string) => void; onSelectMember: (member: Member) => void; onRefresh: () => Promise<void>; onNotice: (message: string) => void }) {
+  return <MembersWorkspaceView {...props} />;
+}
+
+function ChangesView({ changes, demo, onSelectMember, onMarkRead }: { changes: ChangeEvent[]; demo: boolean; onSelectMember: (id: string) => void; onMarkRead: () => Promise<void> }) {
+  const [type, setType] = useState<ChangeType>("all");
+  const [area, setArea] = useState<ChangeArea>("all");
+  const [offset, setOffset] = useState(0);
+  const [revision, setRevision] = useState(0);
+  const [markingRead, setMarkingRead] = useState(false);
+  const [result, setResult] = useState<{ key: string; page: ChangesPage } | null>(null);
+  const [error, setError] = useState<{ key: string; message: string } | null>(null);
+  const key = `${area}:${type}:${offset}:${revision}`;
+  useEffect(() => {
+    if (demo) return;
+    const controller = new AbortController();
+    const params = new URLSearchParams({ area, type, offset: String(offset) });
+    fetch(`/api/changes?${params}`, { signal: controller.signal }).then(async (response) => {
+      const payload = await response.json() as ChangesPage & { error?: string };
+      if (!response.ok) throw new Error(payload.error || "Could not load change history.");
+      if (!controller.signal.aborted) { setResult({ key, page: payload }); setError(null); }
+    }).catch((reason) => { if (!controller.signal.aborted) setError({ key, message: reason instanceof Error ? reason.message : "Could not load change history." }); });
+    return () => controller.abort();
+  }, [demo, area, type, offset, key, changes]);
+  const demoCounts = changeCounts(changes.map((change) => ({ action: change.action, total: 1, unread: Number(change.unread) })), { type, area });
+  const page: ChangesPage | null = demo ? { ...demoCounts, changes: changes.filter((change) => matchesChange(change.action, { type, area })).slice(offset, offset + 50), offset, limit: 50 } : result?.key === key ? result.page : null;
+  const failure = error?.key === key ? error.message : null;
+  const loading = !page && !failure;
+  const counts = page ?? result?.page;
+  function reset() { setArea("all"); setType("all"); setOffset(0); }
+  async function markRead() {
+    setMarkingRead(true);
+    try { await onMarkRead(); }
+    finally { setMarkingRead(false); setRevision((value) => value + 1); }
+  }
+  return <div className="page-content changes-page">
+    <PageIntro eyebrow="Saved history" title="Changes" description="Review workspace changes separately from People API profile and organization updates." actions={<><button className="button button--secondary" disabled={demo || loading} onClick={() => setRevision((value) => value + 1)}><RefreshCw size={16} />Refresh history</button><button className="button button--secondary" disabled={demo || markingRead || !counts?.allUnread} onClick={markRead}><Check size={16} />{markingRead ? "Marking read…" : "Mark all read"}</button></>} />
+    <section className="panel changes-filters" aria-label="Change filters">
+      <label><span>Change area</span><select value={area} onChange={(event) => { setArea(event.target.value as ChangeArea); setType("all"); setOffset(0); }}><option value="all">All changes{counts ? ` (${counts.byArea.all})` : ""}</option><option value="people">People API changes{counts ? ` (${counts.byArea.people})` : ""}</option><option value="workspace">OpenAI workspace changes{counts ? ` (${counts.byArea.workspace})` : ""}</option><option value="other">Other / unclassified{counts ? ` (${counts.byArea.other})` : ""}</option></select></label>
+      <label><span>Change type</span><select value={type} onChange={(event) => { setType(event.target.value as ChangeType); setOffset(0); }}><option value="all">All types{page ? ` (${page.byType.all})` : ""}</option>{changeTypes.filter((item) => area === "all" || item.area === area).map((item) => <option key={item.value} value={item.value}>{item.label}{page ? ` (${page.byType[item.value]})` : ""}</option>)}</select></label>
+      <button className="button button--secondary" disabled={area === "all" && type === "all"} onClick={reset}>Clear filters</button>
+    </section>
+    <p className="changes-filter-note">People API changes include job title, department, manager, entity and recorded profile events—not OpenAI permission roles. Entity is an enriched field and may fall back to email domain. Filters use the recorded change, not the actor; ambiguous legacy events stay unclassified.</p>
+    <div className="change-summary"><span><Bell size={17} /><strong>{page ? `${page.unread} unread in this selection · ${page.allUnread} overall` : "Loading history…"}</strong></span><p>Mark all read applies to the entire saved history, regardless of filters.</p></div>
+    <section className="panel changes-panel" aria-busy={loading}>
+      <div className="changes-date" aria-live="polite"><span>{demo ? "Demo history" : "All saved history · newest first"}</span><small>{page ? `${page.total ? page.offset + 1 : 0}–${page.offset + page.changes.length} of ${page.total} matching events` : "Loading…"}</small></div>
+      {failure ? <div className="analytics-warning analytics-warning--error" role="alert">{failure}</div> : loading ? <div className="analytics-loading"><LoaderCircle size={20} className="spin" />Loading changes</div> : page && <>
+        {page.changes.map((change) => <button className={`change-detail-row${change.unread ? " unread" : ""}`} key={change.id} onClick={() => change.subjectId && onSelectMember(change.subjectId)}><span className={`change-kind change-kind--${change.kind}`}>{change.kind === "group" ? <Group size={16} /> : change.kind === "entity" ? <Building2 size={16} /> : change.kind === "role" ? <ShieldCheck size={16} /> : <Users size={16} />}</span><span className="change-copy"><strong>{change.person}</strong><span>{change.action}</span><small>{change.detail}</small><small className="change-attribution">{changeAttribution(change)}</small></span><span className="entity-pill"><i style={{ background: entityColors[change.entity] }} />{change.entity}</span><time>{change.time}</time><ChevronRight size={15} /></button>)}
+        {!page.changes.length && <div className="empty-state"><GitCompareArrows size={22} /><strong>No matching changes</strong><p>{page.allTotal ? "Choose a different change area or type, or clear the filters." : "Changes appear after a later directory sync detects differences from the baseline."}</p></div>}
+        {page.total > page.limit && <div className="changes-pagination"><button className="button button--secondary" disabled={page.offset === 0} onClick={() => setOffset(Math.max(0, page.offset - page.limit))}>Previous</button><span>Page {Math.floor(page.offset / page.limit) + 1} of {Math.ceil(page.total / page.limit)}</span><button className="button button--secondary" disabled={page.offset + page.limit >= page.total} onClick={() => setOffset(page.offset + page.limit)}>Next</button></div>}
+      </>}
+    </section>
   </div>;
-}
-
-function ChangesView({ changes, onSelectMember, onMarkRead }: { changes: ChangeEvent[]; onSelectMember: (id: string) => void; onMarkRead: () => void }) {
-  const unread = changes.filter((change) => change.unread).length;
-  return <div className="page-content"><PageIntro eyebrow="Since the last snapshot" title="Changes" description="A reviewable audit trail of member, role, entity, and group differences." actions={<button className="button button--secondary" onClick={onMarkRead}><Check size={16} />Mark all read</button>} /><div className="change-summary"><span><Bell size={17} /><strong>{unread} unread changes</strong></span><p>Added-by is shown only when an upstream source provides an actor; directory-only events remain explicitly unknown.</p></div><section className="panel changes-panel"><div className="changes-date"><span>Latest sync</span><small>{changes.length} events</small></div>{changes.map((change) => <button className={`change-detail-row${change.unread ? " unread" : ""}`} key={change.id} onClick={() => change.subjectId && onSelectMember(change.subjectId)}><span className={`change-kind change-kind--${change.kind}`}>{change.kind === "group" ? <Group size={16} /> : change.kind === "entity" ? <Building2 size={16} /> : change.kind === "role" ? <ShieldCheck size={16} /> : <Users size={16} />}</span><span className="change-copy"><strong>{change.person}</strong><span>{change.action}</span><small>{change.detail}</small><small className="change-attribution">{changeAttribution(change)}</small></span><span className="entity-pill"><i style={{ background: entityColors[change.entity] }} />{change.entity}</span><time>{change.time}</time><ChevronRight size={15} /></button>)}</section></div>;
 }
 
 function ChangeRow({ change }: { change: ChangeEvent }) {
   return <div className="change-row"><span className={`change-dot change-dot--${change.kind}`}><i /></span><span><strong>{change.person}</strong><small>{change.action} · {change.detail}</small><small className="change-attribution">{changeAttribution(change)}</small></span><time>{change.time}</time></div>;
 }
 
-function MemberDrawer({ member, groups, data, onClose }: { member: Member; groups: WorkspaceGroup[]; data: DashboardData; onClose: () => void }) {
-  const [saving, setSaving] = useState(false); const [savedGroups, setSavedGroups] = useState(member.groups);
-  const [status, setStatus] = useState<string | null>(null); const [pendingGroup, setPendingGroup] = useState<WorkspaceGroup | null>(null);
-  async function confirmGroupChange(group: WorkspaceGroup) {
-    if (group.source === "SCIM") return;
-    const hasGroup = savedGroups.includes(group.name); setSaving(true); setStatus(null);
-    try { const response = await fetch("/api/group-membership", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ memberId: member.id, groupId: group.id, action: hasGroup ? "remove" : "add" }) }); const payload = await response.json() as { error?: string; message?: string }; if (!response.ok) throw new Error(payload.error || "Group update failed"); setSavedGroups((current) => hasGroup ? current.filter((name) => name !== group.name) : [...current, group.name]); setStatus(payload.message || "Group membership updated and verified."); }
-    catch (error) { setStatus(error instanceof Error ? error.message : "Group update failed"); }
-    finally { setSaving(false); setPendingGroup(null); }
-  }
-  const pendingAction = pendingGroup && savedGroups.includes(pendingGroup.name) ? "remove from" : "add to";
-  const value = usageValue(member.usage, data);
-  return <div className="drawer-layer" role="dialog" aria-modal="true" aria-label={`Member details for ${member.name}`}><button className="drawer-scrim" onClick={onClose} aria-label="Close member details" /><aside className="member-drawer"><div className="drawer-header"><span className="eyebrow">Member profile</span><button className="icon-button" onClick={onClose}><X size={17} /></button></div><div className="member-hero"><span className="avatar avatar--large">{initials(member.name)}</span><div><h2>{member.name}</h2><p>{member.email}</p><span className="entity-pill"><i style={{ background: entityColors[member.entity] }} />{member.entity}</span></div></div><div className="profile-section"><h3>Organization</h3><dl><div><dt>People API role</dt><dd>{member.peopleRole || "Missing"}</dd></div><div><dt>Department</dt><dd>{member.department || "—"}</dd></div><div><dt>Manager</dt><dd>{member.manager}</dd></div><div><dt>Workspace role</dt><dd>{member.workspaceRole}</dd></div></dl></div><div className="profile-section"><h3>Workspace addition</h3><dl><div><dt>Added / invited</dt><dd>{formatDateTime(member.addedAt)}</dd></div><div><dt>Added by</dt><dd>{memberAdditionLabel(member)}</dd></div><div><dt>Attribution source</dt><dd>{member.additionSource ?? "Legacy snapshot"}</dd></div></dl><p className="section-helper">Inviter identity cannot be inferred from a snapshot. Codexlens stores it only when the upstream API explicitly supplies it.</p></div><div className="profile-section"><div className="profile-section-heading"><h3>Group membership</h3><span>{savedGroups.length}</span></div><p className="section-helper">Manual groups can be changed here. SCIM groups are read-only.</p><div className="membership-list">{groups.map((group) => { const checked = savedGroups.includes(group.name); return <button key={group.id} disabled={saving || group.source === "SCIM"} onClick={() => setPendingGroup(group)}><span className={`check-box${checked ? " checked" : ""}`}>{checked && <Check size={13} />}</span><span><strong>{group.name}</strong><small>{group.source}</small></span>{group.source === "SCIM" && <ShieldCheck size={14} />}</button>; })}</div>{status && <div className="drawer-status">{status}</div>}</div><div className="profile-section usage-highlight usage-highlight--three"><span><small>Usage</small><strong>{formatNumber(member.usage)}</strong></span><span><small>Usage value</small><strong>{formatMoney(value, data.settings.currency)}</strong></span><span><small>Messages</small><strong>{formatNumber(member.messages)}</strong></span></div>{pendingGroup && <div className="confirm-layer"><div className="confirm-card"><span className="eyebrow">Confirm workspace change</span><h3>{pendingAction === "add to" ? "Add" : "Remove"} group membership?</h3><p>This will {pendingAction} <strong>{member.name}</strong> {pendingAction === "add to" ? "the" : ""} <strong>{pendingGroup.name}</strong> group in ChatGPT, then verify the result.</p><div><button className="button button--secondary" onClick={() => setPendingGroup(null)} disabled={saving}>Cancel</button><button className="button button--primary" onClick={() => confirmGroupChange(pendingGroup)} disabled={saving}>{saving ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}Confirm</button></div></div></div>}</aside></div>;
+function MemberDrawer({ member, data, onClose, onRefresh }: { member: Member; groups: WorkspaceGroup[]; data: DashboardData; onClose: () => void; onRefresh: () => Promise<void> }) {
+  return <div className="drawer-layer" role="dialog" aria-modal="true" aria-label={`Member details for ${member.name}`}><button className="drawer-scrim" onClick={onClose} aria-label="Close member details" /><aside className="member-drawer"><div className="drawer-header"><span className="eyebrow">Member profile</span><button className="icon-button" onClick={onClose} aria-label="Close profile"><X size={17} /></button></div><div className="member-hero"><span className="avatar avatar--large">{initials(member.name)}</span><div><h2>{member.name}</h2><p>{member.email}</p><span className="entity-pill">{member.entity}</span></div></div>
+    <div className="profile-section"><MemberGroupEditor key={member.id} member={member} data={data} onRefresh={onRefresh} /></div>
+    <div className="profile-section"><h3>Organization</h3><dl><div><dt>People API job title</dt><dd>{member.peopleRole || "Missing"}</dd></div><div><dt>Profile status</dt><dd>{member.peopleMatch}</dd></div><div><dt>Department</dt><dd>{member.department || "—"}</dd></div><div><dt>Manager</dt><dd>{member.manager || "—"}</dd></div><div><dt>OpenAI workspace role</dt><dd>{member.workspaceRole}</dd></div></dl></div>
+    <div className="profile-section"><h3>Workspace addition</h3><dl><div><dt>Added / invited</dt><dd>{formatDateTime(member.addedAt)}</dd></div><div><dt>Added by</dt><dd>{memberAdditionLabel(member)}</dd></div><div><dt>Attribution source</dt><dd>{member.additionSource ?? "Legacy snapshot"}</dd></div></dl></div>
+    <div className="profile-section usage-highlight usage-highlight--three"><span><small>Stored usage · all imported history</small><strong>{formatNumber(member.usage)}</strong></span><span><small>Attributed usage value · not invoice spend</small><strong>{formatMoney(data.mode === "demo" ? usageValue(member.usage, data) : member.usageValue ?? null, data.settings.currency)}</strong></span><span><small>Messages</small><strong>{formatNumber(member.messages)}</strong></span></div>
+  </aside></div>;
 }
 
 function SettingsDrawer({ settings, usageUnit, onClose, onSaved }: { settings: AppSettings; usageUnit: DashboardData["usageUnit"]; onClose: () => void; onSaved: (settings: AppSettings) => void }) {
@@ -639,5 +659,5 @@ function SettingsDrawer({ settings, usageUnit, onClose, onSaved }: { settings: A
   }
   const example = price.trim() && Number.isFinite(Number(price)) ? 1000 * Number(price) : null;
   const overageSpend = overage.trim() && price.trim() && Number.isFinite(Number(overage)) && Number.isFinite(Number(price)) ? Number(overage) * Number(price) : null;
-  return <div className="drawer-layer" role="dialog" aria-modal="true" aria-label="Usage valuation, budget, and billing settings"><button className="drawer-scrim" onClick={onClose} aria-label="Close settings" /><aside className="member-drawer settings-drawer"><div className="drawer-header"><span className="eyebrow">Workspace settings</span><button className="icon-button" onClick={onClose}><X size={17} /></button></div><div className="settings-hero"><span className="settings-icon"><SlidersHorizontal size={20} /></span><div><h2>Budget & billing</h2><p>Set planning guardrails and keep invoice assumptions explicit.</p></div></div><div className="profile-section"><h3>Usage valuation</h3><label className="field-label"><span>Price per credit</span><div className="price-input"><input type="number" min="0" step="0.0001" inputMode="decimal" placeholder="0.0000" value={price} onChange={(event) => setPrice(event.target.value)} /><select value={currency} onChange={(event) => setCurrency(event.target.value as Currency)}><option>USD</option><option>PLN</option><option>EUR</option></select></div></label><div className="formula-card"><span>Usage value</span><strong>attributed credits × price per credit</strong><small>{example === null ? "Enter a price to preview the calculation." : `1,000 credits = ${formatMoney(example, currency)}`}</small></div>{usageUnit === "tokens" && <div className="read-only-note"><Activity size={17} /><span><strong>Current imports use tokens</strong><small>Token rows are not converted with the credit rate. Import credits or monetary rows for value reporting.</small></span></div>}</div><div className="profile-section billing-fields"><h3>OpenAI Billing snapshot</h3><p className="section-helper">Copy workspace-level figures from Admin Console. They stay local and are used as an analytical reference.</p><div className="billing-field-grid"><label className="field-label"><span>Current credit balance</span><input type="number" min="0" step="1" inputMode="decimal" placeholder="0" value={currentBalance} onChange={(event) => setCurrentBalance(event.target.value)} /></label><label className="field-label"><span>Unbilled overage credits</span><input type="number" min="0" step="0.01" inputMode="decimal" placeholder="244408" value={overage} onChange={(event) => setOverage(event.target.value)} /></label><label className="field-label"><span>Workspace overage limit</span><input type="number" min="0" step="1" inputMode="decimal" placeholder="Optional" value={overageLimit} onChange={(event) => setOverageLimit(event.target.value)} /></label><label className="field-label"><span>Period start</span><input type="date" value={periodStart} max={periodEnd || undefined} onChange={(event) => setPeriodStart(event.target.value)} /></label><label className="field-label"><span>Period end</span><input type="date" value={periodEnd} min={periodStart || undefined} onChange={(event) => setPeriodEnd(event.target.value)} /></label></div><div className="formula-card"><span>Estimated invoice (overage)</span><strong>unbilled overage × price per credit</strong><small>{overageSpend === null ? "Enter the Billing overage to calculate it." : `${formatNumber(Number(overage))} credits = ${formatMoney(overageSpend, currency)}`}</small></div></div><div className="profile-section billing-fields"><h3>Budget guardrails</h3><p className="section-helper">The target belongs to the saved billing period. Analytics prorates it by day for unfiltered periods; it is never allocated to groups or entities.</p><div className="billing-field-grid"><label className="field-label"><span>Billing-cycle budget ({currency})</span><input type="number" min="0" step="1" inputMode="decimal" placeholder="10000" value={billingBudget} onChange={(event) => setBillingBudget(event.target.value)} /></label><label className="field-label"><span>Alert at (%)</span><input type="number" min="1" max="100" step="1" inputMode="decimal" value={alertPercent} onChange={(event) => setAlertPercent(event.target.value)} /></label></div></div><div className="settings-note"><ShieldCheck size={16} /><p>Usage value measures all attributed credits at the selected rate. Reported USD rows are direct cost data; calibrated credit estimates and forecasts are planning data. Issued invoices remain authoritative.</p></div>{error && <div className="drawer-status">{error}</div>}<div className="settings-actions"><button className="button button--secondary" onClick={onClose}>Cancel</button><button className="button button--primary" onClick={save} disabled={saving}>{saving ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}Save settings</button></div></aside></div>;
+  return <div className="drawer-layer" role="dialog" aria-modal="true" aria-label="Usage valuation, budget, and billing settings"><button className="drawer-scrim" onClick={onClose} aria-label="Close settings" /><aside className="member-drawer settings-drawer"><div className="drawer-header"><span className="eyebrow">Workspace settings</span><button className="icon-button" onClick={onClose}><X size={17} /></button></div><div className="settings-hero"><span className="settings-icon"><SlidersHorizontal size={20} /></span><div><h2>Budget & billing</h2><p>Set planning guardrails. API usage estimates and manual overage are not issued invoices.</p></div></div><div className="profile-section"><h3>Usage valuation</h3><label className="field-label"><span>Price per credit</span><div className="price-input"><input type="number" min="0" step="0.0001" inputMode="decimal" placeholder="0.0000" value={price} onChange={(event) => setPrice(event.target.value)} /><select value={currency} onChange={(event) => setCurrency(event.target.value as Currency)}><option>USD</option><option>PLN</option><option>EUR</option></select></div></label><div className="formula-card"><span>Usage value</span><strong>attributed credits × price per credit</strong><small>{example === null ? "Enter a price to preview the calculation." : `1,000 credits = ${formatMoney(example, currency)}`}</small></div>{usageUnit === "tokens" && <div className="read-only-note"><Activity size={17} /><span><strong>Current imports use tokens</strong><small>Token rows are not converted with the credit rate. Import credits or monetary rows for value reporting.</small></span></div>}</div><div className="profile-section billing-fields"><h3>OpenAI Billing snapshot</h3><p className="section-helper">Copy current workspace-level figures from Admin Console. They stay local; this is a point-in-time snapshot, not historical invoice data.</p><div className="billing-field-grid"><label className="field-label"><span>Current credit balance</span><input type="number" min="0" step="1" inputMode="decimal" placeholder="0" value={currentBalance} onChange={(event) => setCurrentBalance(event.target.value)} /></label><label className="field-label"><span>Unbilled overage credits</span><input type="number" min="0" step="0.01" inputMode="decimal" placeholder="244408" value={overage} onChange={(event) => setOverage(event.target.value)} /></label><label className="field-label"><span>Workspace overage limit</span><input type="number" min="0" step="1" inputMode="decimal" placeholder="Optional" value={overageLimit} onChange={(event) => setOverageLimit(event.target.value)} /></label><label className="field-label"><span>Period start</span><input type="date" value={periodStart} max={periodEnd || undefined} onChange={(event) => setPeriodStart(event.target.value)} /></label><label className="field-label"><span>Period end</span><input type="date" value={periodEnd} min={periodStart || undefined} onChange={(event) => setPeriodEnd(event.target.value)} /></label></div><div className="formula-card"><span>Manual overage value</span><strong>unbilled overage × price per credit</strong><small>{overageSpend === null ? "Enter the Billing overage to calculate it." : `${formatNumber(Number(overage))} credits = ${formatMoney(overageSpend, currency)}`}</small></div></div><div className="profile-section billing-fields"><h3>Budget guardrails</h3><p className="section-helper">The target belongs to the saved billing period. Analytics prorates it by day for unfiltered periods; it is never allocated to groups or entities.</p><div className="billing-field-grid"><label className="field-label"><span>Billing-cycle budget ({currency})</span><input type="number" min="0" step="1" inputMode="decimal" placeholder="10000" value={billingBudget} onChange={(event) => setBillingBudget(event.target.value)} /></label><label className="field-label"><span>Alert at (%)</span><input type="number" min="1" max="100" step="1" inputMode="decimal" value={alertPercent} onChange={(event) => setAlertPercent(event.target.value)} /></label></div></div><div className="settings-note"><ShieldCheck size={16} /><p>OpenAI Analytics USD estimates take precedence over the fallback credit rate. Neither usage estimates nor this manually entered overage is an issued invoice.</p></div>{error && <div className="drawer-status">{error}</div>}<div className="settings-actions"><button className="button button--secondary" onClick={onClose}>Cancel</button><button className="button button--primary" onClick={save} disabled={saving}>{saving ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}Save settings</button></div></aside></div>;
 }

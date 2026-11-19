@@ -25,14 +25,56 @@ test("server-renders the codexlens workspace dashboard", async () => {
   assert.match(html, /Usage by entity/i);
   assert.match(html, /What changed/i);
   assert.match(html, /Usage value/i);
-  assert.match(html, /Estimated invoice/i);
+  assert.match(html, /Attributed usage value/i);
   assert.match(html, /Sync directory/i);
   assert.match(html, />Organize</i);
-  assert.match(html, /David&#x27;s org/i);
+  assert.match(html, />Management</i);
   assert.match(html, /bubble-logo/);
 });
 
-test("rolls workspace usage into David Roberts direct-manager invoice shares", async () => {
+test("server-renders the Management view with the configured demo default", async () => {
+  const response = await render("/?demo=1&view=management");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /David Roberts.*teams/);
+  assert.match(html, /Search manager/);
+  assert.match(html, /Share of selected teams/);
+  assert.match(html, /Outside David Roberts/);
+});
+
+test("server-renders Changes filters with People API and distinct OpenAI role types", async () => {
+  const response = await render("/?demo=1&view=changes");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /Change area/);
+  assert.match(html, /Change type/);
+  assert.match(html, /People API changes/);
+  assert.match(html, /People API job title/);
+  assert.match(html, /OpenAI workspace role/);
+  assert.match(html, /Clear filters/);
+  assert.match(html, /Demo history/);
+  assert.match(html, /entire saved history/);
+});
+
+test("renders local role-group plans without claiming live permissions", async () => {
+  const response = await render("/?demo=1&view=permissions");
+  const html = await response.text();
+  assert.equal(response.status, 200);
+  for (const text of [/Local mapping plan/, /not live OpenAI permissions/, /Register role reference/, /By role/, /By group/, /Read-only demo/, /Current OpenAI configuration/, /Read-only OpenAI snapshot/, /No OpenAI role snapshot yet/, /No local role references registered/, /An empty local plan does not mean your workspace has no roles/]) assert.match(html,text);
+  const analytics = await render("/?demo=1&view=analytics");
+  assert.match(await analytics.text(), /N-1 coverage/);
+});
+
+test("renders the regular/special group policy and domain-first organizer", async () => {
+  const members = await render("/?demo=1&view=members");
+  const html = await members.text();
+  for(const text of [/Members &amp; groups/, /Special groups only/, /One regular group/, /Multiple regular groups/, /People API job title/]) assert.match(html,text);
+  const organizer = await render("/?demo=1&view=organize");
+  const org = await organizer.text();
+  for(const text of [/Email domain/, /regular group/, /Exact, case-insensitive/, /People API job title/, /Review people/, /Special groups/, /Manager’s structure/, /Find structure manager/, /Add structure rule/, /Includes the selected manager and all direct and indirect reports/, /nearest configured manager/, /Adds to your draft/, />Tech</, />Non-tech</, /Tech = /, /Non-tech = everyone outside/, /Filter job titles by email domain/, /Filter job titles by N-1 head/, /Filter job titles by Tech or Non-tech/, /Filter job titles by rule or assignment/, /No title rule/, /People without regular group/, /Without regular/, /Clear filters/]) assert.match(org,text);
+});
+
+test("rolls selected manager usage into direct-manager attributed values", async () => {
   const [shell, view, route, peopleApi, config] = await Promise.all([
     readFile(new URL("../app/ui/CodexlensApp.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/ui/ManagementCostView.tsx", import.meta.url), "utf8"),
@@ -40,64 +82,79 @@ test("rolls workspace usage into David Roberts direct-manager invoice shares", a
     readFile(new URL("../lib/people-api.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/config.ts", import.meta.url), "utf8"),
   ]);
-  assert.match(shell, /id: "management", label: "David's org"/);
+  assert.match(shell, /id: "management", label: "Management"/);
   assert.match(shell, /<ManagementCostView/);
-  assert.match(view, /Fraction of invoice/);
-  assert.match(view, /Share of David org/);
-  assert.match(view, /Allocated invoice/);
-  assert.match(view, /reconciliation row add to exactly 100%/);
+  assert.match(view, /Search manager/);
+  assert.match(view, /Share of workspace usage/);
+  assert.match(view, /Share of selected teams/);
+  assert.match(view, /Attributed value/);
+  assert.match(view, /reconciliation row/);
   assert.match(route, /listEmployees/);
   assert.match(route, /directOwner/);
   assert.match(route, /row\.invoiceShare = workspaceUsage > 0 \? row\.usage \/ workspaceUsage/);
-  assert.match(route, /__outside_david_org__/);
-  assert.match(route, /invoice \* row\.invoiceShare/);
+  assert.match(route, /managerId/);
+  assert.match(route, /findPersonById/);
+  assert.match(route, /__outside_selected_teams__/);
+  assert.match(route, /row\.allocatedInvoiceCost = row\.usageValue/);
   assert.match(peopleApi, /findPersonByDisplayName/);
+  assert.match(peopleApi, /findPersonById/);
+  assert.match(peopleApi, /searchPeople/);
+  assert.match(peopleApi, /listDirectoryPeople/);
+  assert.match(peopleApi, /editDistance/);
   assert.match(peopleApi, /\/employees/);
   assert.match(config, /MANAGEMENT_LEADER_NAME/);
 });
 
-test("provides a guarded role and entity group organizer", async () => {
-  const [shell, organizer, rules, membershipRoute, mappingsRoute, store] = await Promise.all([
+test("supports a People API manager picker with a David Roberts demo default", async () => {
+  const [pickerRoute, view, demo, types, shell, readme] = await Promise.all([
+    readFile(new URL("../app/api/management-managers/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/ui/ManagementCostView.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/demo-data.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/types.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/ui/CodexlensApp.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../app/ui/OrganizerView.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../lib/role-rules.ts", import.meta.url), "utf8"),
-    readFile(new URL("../app/api/group-membership/route.ts", import.meta.url), "utf8"),
-    readFile(new URL("../app/api/organizer-mappings/route.ts", import.meta.url), "utf8"),
-    readFile(new URL("../db/store.ts", import.meta.url), "utf8"),
+    readFile(new URL("../README.md", import.meta.url), "utf8"),
   ]);
-  assert.match(shell, /id: "organize", label: "Organize"/);
-  assert.match(shell, /<OrganizerView/);
-  assert.match(organizer, /People API role/);
-  assert.match(organizer, /Entity/);
-  assert.match(organizer, /Use agreed role rules/);
-  assert.match(organizer, /Manual destination mode/);
-  assert.match(organizer, /Role & entity mappings/);
-  assert.match(organizer, /People API role → groups/);
-  assert.match(organizer, /Entity → groups/);
-  assert.match(organizer, /GroupMultiSelect/);
-  assert.match(organizer, /Without group/);
-  assert.match(organizer, /More than one group/);
-  assert.match(organizer, /roleToGroups/);
-  assert.match(organizer, /Saving them does not change OpenAI/);
-  assert.match(organizer, /buildMappedAssignments/);
-  assert.match(organizer, /Review \{selectedRows\.length\} changes/);
-  assert.match(organizer, /It does not remove existing memberships/);
-  assert.match(organizer, /Target group is SCIM-managed/);
-  assert.match(organizer, /People API role missing/);
-  assert.match(organizer, /action: "add"/);
-  assert.doesNotMatch(organizer, /action: "remove"/);
-  assert.match(rules, /return "PM"/);
-  assert.match(rules, /return "Developers"/);
-  assert.match(membershipRoute, /body\.action !== "add"/);
-  assert.match(mappingsRoute, /saveOrganizerMappings/);
-  assert.match(store, /organizer_role_mappings/);
-  assert.match(store, /organizer_entity_mappings/);
+  assert.match(pickerRoute, /managementLeaderName/);
+  assert.match(pickerRoute, /searchPeople/);
+  assert.match(pickerRoute, /slice\(0, 20\)/);
+  assert.match(view, /Reset to default/);
+  assert.match(view, /managerId/);
+  assert.match(view, /displayedManagement\.leader\.id !== selectedManager\.id/);
+  assert.match(view, /No People API matches/);
+  assert.match(view, /No direct reports found/);
+  assert.match(view, /demoManagementManagers/);
+  assert.match(demo, /demo-manager-david/);
+  assert.match(demo, /demoManagementData/);
+  assert.match(types, /ManagementManagerOption/);
+  assert.match(types, /selectedOrgUsage/);
+  assert.match(shell, /label: "Management"/);
+  assert.match(readme, /defaults to David Roberts but can/i);
+});
+
+test("membership editors share the server-reviewed change path", async () => {
+  const [organizer, editor, route, legacy, client] = await Promise.all([
+    readFile(new URL("../app/ui/AccessOrganizerView.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/ui/MemberGroupEditor.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/access-plan/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/group-membership/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/openai-admin.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(organizer, /emailDomainToGroups/);
+  assert.match(organizer, /policyVersion: 2/);
+  assert.match(editor, /Special groups/);
+  assert.match(editor, /kind: "special"/);
+  assert.match(editor, /action: present \? "remove" : "add"/);
+  assert.match(route, /claimAccessPlan/);
+  assert.match(route, /reviewFingerprint/);
+  assert.match(route, /updateGroupMembership/);
+  assert.match(legacy, /status: 410/);
+  assert.ok(client.includes("manage/workspaces"));
 });
 
 test("syncs Codex Analytics history and keeps actor provenance explicit", async () => {
   const [client, syncRoute, store, schema, adminClient, analyticsClient] = await Promise.all([
     readFile(new URL("../app/ui/CodexlensApp.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../app/api/sync/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/directory-sync.ts", import.meta.url), "utf8"),
     readFile(new URL("../db/store.ts", import.meta.url), "utf8"),
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/openai-admin.ts", import.meta.url), "utf8"),
@@ -128,8 +185,10 @@ test("keeps credentials server-side and group writes confirmable", async () => {
     readFile(new URL("../.gitignore", import.meta.url), "utf8"),
     readFile(new URL("../.env.example", import.meta.url), "utf8"),
   ]);
-  assert.match(client, /Confirm workspace change/);
-  assert.match(client, /SCIM groups are read-only/);
+  const editor = await readFile(new URL("../app/ui/MemberGroupEditor.tsx", import.meta.url), "utf8");
+  const dialog = await readFile(new URL("../app/ui/AccessChangeDialog.tsx", import.meta.url), "utf8");
+  assert.match(dialog, /Confirm workspace change/);
+  assert.match(editor, /SCIM groups are read-only/);
   const adminSecretPrefix = new RegExp(["sk", "admin"].join("-") + "-");
   assert.doesNotMatch(client, adminSecretPrefix);
   assert.match(config, /CHATGPT_ADMIN_KEY/);
@@ -148,9 +207,10 @@ test("documents non-overlapping workspace usage semantics", async () => {
   const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
   assert.match(readme, /workspace total sums each person once/i);
   assert.match(readme, /group totals can overlap/i);
-  assert.match(readme, /never auto-assign/i);
+  assert.match(readme, /job-title rules blocked/i);
+  assert.match(readme, /never applies assignment rules/i);
   assert.match(readme, /usage value = attributed credits/i);
-  assert.match(readme, /workspace overage are separate billing concepts/i);
+  assert.match(readme, /committed-credit/i);
   assert.match(readme, /daily, weekly, and monthly analytics/i);
 });
 
@@ -168,33 +228,38 @@ test("exposes persisted pricing and filtered analytics routes", async () => {
   assert.match(client, /All groups/);
   assert.match(client, /All entities/);
   assert.match(client, /OpenAI Billing snapshot/);
-  assert.match(client, /Estimated invoice \(overage\)/);
-  assert.match(client, /Period-end forecast/);
+  assert.match(client, /Manual overage value/);
+  assert.match(client, /Usage-value forecast/);
   assert.match(client, /Budget utilization/);
   assert.match(client, /Vs previous period/);
   assert.match(client, /Top 10 usage share/);
   assert.match(client, /Budget signals/);
-  assert.match(client, /Invoice cost/);
-  assert.match(client, /Invoice allocation model/);
-  assert.match(client, /Calibrated overage share/);
-  assert.match(client, /Group estimates use the calibrated overage share/);
-  assert.match(client, /invoiceRate/);
+  assert.match(client, /OpenAI usage estimate/);
+  assert.match(client, /Why this differs from Billing/);
+  assert.match(client, /point-in-time balance/);
+  assert.match(client, /group values must not be added together/);
   assert.match(client, /All usage, value, and activity metrics below use/);
   assert.match(client, /All Overview usage data uses this period/);
-  assert.match(client, /Not grouped/);
-  assert.match(client, /More than one group/);
+  const membersView = await readFile(new URL("../app/ui/MembersWorkspaceView.tsx", import.meta.url), "utf8");
+  assert.match(membersView, /No groups/);
+  assert.match(membersView, /Multiple regular groups/);
   assert.doesNotMatch(client, /\{ id: "groups", label: "Groups"/);
   assert.match(client, /Unbilled overage credits/);
   assert.match(client, /Workspace overage limit/);
   assert.match(client, /Billing-cycle budget/);
   assert.match(client, /Alert at \(%\)/);
-  assert.match(client, /Historical usage uses current membership/);
+  assert.match(client, /Usage is attributed using current group membership/);
+  assert.match(client, /AnalyticsRoleSplit/);
+  assert.match(client, /People API job-family split/);
+  assert.match(client, /Data, Software, Product, Design, and Other/);
   assert.match(schema, /app_settings/);
   assert.match(store, /price_per_credit/);
   assert.match(store, /pricePerCredit: 0\.04/);
   assert.match(store, /billing_budget_amount/);
   assert.match(store, /budget_alert_percent/);
   assert.match(store, /__unassigned__/);
+  assert.match(store, /people_role/);
+  assert.match(store, /byRole/);
   assert.match(store, /valuationCoverage/);
   assert.match(client, /No historical usage has been loaded/);
   assert.match(analyticsRoute, /getAnalytics/);

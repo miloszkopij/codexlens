@@ -62,6 +62,8 @@ export const usageRecords = sqliteTable("usage_records", {
   periodStart: text("period_start").notNull(),
   periodEnd: text("period_end").notNull(),
   amount: real("amount").notNull(),
+  reportedCostUsd: real("reported_cost_usd"),
+  estimatedCostUsd: real("estimated_cost_usd"),
   messages: integer("messages").notNull().default(0),
   unit: text("unit").notNull().default("credits"),
   source: text("source").notNull(),
@@ -86,4 +88,18 @@ export const syncRuns = sqliteTable("sync_runs", {
   groupsCount: integer("groups_count").notNull().default(0),
   changesCount: integer("changes_count").notNull().default(0),
   error: text("error"),
+});
+
+export const workspaceLocks = sqliteTable("workspace_locks", {
+  name: text("name").primaryKey(),
+  owner: text("owner").notNull(),
+  expiresAt: integer("expires_at").notNull(),
+});
+
+export const accessPlans = sqliteTable("access_plans", {
+  id: text("id").primaryKey(),
+  workspaceId: text("workspace_id").notNull(),
+  payload: text("payload").notNull(),
+  expiresAt: integer("expires_at").notNull(),
+  claimed: integer("claimed").notNull().default(0),
 });

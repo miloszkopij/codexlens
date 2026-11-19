@@ -19,11 +19,11 @@ export async function GET() {
   try {
     const config = getWorkspaceConfig();
     const dashboard = await getDashboard(config.workspaceId, config.workspaceName) ?? demoData;
-    const header = ["name", "email", "workspace_role", "people_role", "department", "manager", "entity", "groups", `usage_${dashboard.usageUnit}`, "usage_value_at_rate", "value_currency", "price_per_credit", "messages", "status", "people_match"];
+    const header = ["name", "email", "workspace_role", "people_role", "department", "manager", "entity", "groups", `usage_${dashboard.usageUnit}`, "attributed_usage_value_not_invoice", "value_currency", "fallback_price_per_credit", "messages", "status", "people_match"];
     const rows = dashboard.members.map((member) => [
       member.name, member.email, member.workspaceRole, member.peopleRole, member.department,
       member.manager, member.entity, member.groups.join(" | "), member.usage,
-      usageValue(member.usage, dashboard.usageUnit, dashboard.settings.pricePerCredit),
+      dashboard.mode === "demo" ? usageValue(member.usage, dashboard.usageUnit, dashboard.settings.pricePerCredit) : member.usageValue ?? "",
       dashboard.usageUnit === "usd" ? "USD" : dashboard.settings.currency,
       dashboard.settings.pricePerCredit ?? "", member.messages, member.status, member.peopleMatch,
     ]);

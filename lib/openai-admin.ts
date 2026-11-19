@@ -1,4 +1,5 @@
 import { fetchJson } from "./http";
+import { isWorkspaceRole, type WorkspaceRole, type WorkspaceRoleMember } from "./workspace-roles";
 
 interface Page<T> { data?: T[]; has_more?: boolean; last_id?: string; cursor?: string; }
 type OpenAIActor = string | {
@@ -13,6 +14,7 @@ export interface OpenAIUser {
   name?: string;
   email?: string;
   role?: string;
+  seat_type?: string;
   status?: string;
   is_scim_managed?: boolean;
   added_at?: number | string;
@@ -21,6 +23,23 @@ export interface OpenAIUser {
   added_by?: OpenAIActor;
   invited_by?: OpenAIActor;
   created_by?: OpenAIActor;
+}
+
+export function roleMember(user: OpenAIUser): WorkspaceRoleMember {
+  return { id: user.id, name: user.name || user.email || "Unnamed member", email: user.email || "",
+    role: isWorkspaceRole(user.role) ? user.role : "unknown",
+    seatType: user.seat_type === "codex" || user.seat_type === "chatgpt" ? user.seat_type : "unknown", scimManaged: Boolean(user.is_scim_managed) };
+}
+
+export async function getWorkspaceUser(baseUrl: string, workspaceId: string, userId: string, adminKey: string) {
+  return fetchJson<OpenAIUser>(`${baseUrl}/manage/workspaces/${encodeURIComponent(workspaceId)}/users/${encodeURIComponent(userId)}`, { headers: headers(adminKey) });
+}
+
+export async function updateWorkspaceUserRole(baseUrl: string, workspaceId: string, userId: string, adminKey: string, role: WorkspaceRole) {
+  // Permission changes are never automatically retried after an uncertain write.
+  return fetchJson<OpenAIUser>(`${baseUrl}/manage/workspaces/${encodeURIComponent(workspaceId)}/users/${encodeURIComponent(userId)}`, {
+    method: "POST", headers: headers(adminKey, true), body: JSON.stringify({ role }),
+  }, 1);
 }
 export interface OpenAIGroup { id: string; name: string; description?: string; is_scim_managed?: boolean; source?: string; type?: string; }
 
@@ -67,14 +86,26 @@ export async function listWorkspaceUsers(baseUrl: string, workspaceId: string, a
 
 export async function listWorkspaceGroups(baseUrl: string, workspaceId: string, adminKey: string) {
   const groups: OpenAIGroup[] = []; let cursor: string | undefined;
+  const cursors = new Set<string>(); const ids = new Set<string>();
   do {
     const params = new URLSearchParams({ limit: "100" }); if (cursor) params.set("cursor", cursor);
     const page = await fetchJson<Page<OpenAIGroup>>(`${baseUrl}/manage/workspaces/${workspaceId}/groups?${params}`, { headers: headers(adminKey) });
-    groups.push(...(Array.isArray(page.data) ? page.data : []));
+    if (!page || !Array.isArray(page.data) || (page.has_more !== undefined && typeof page.has_more !== "boolean")) throw new Error("Incomplete workspace group list.");
+    for (const group of page.data) {
+      if (!group || typeof group.id !== "string" || !group.id || typeof group.name !== "string" || !group.name || ids.has(group.id)) throw new Error("Invalid or duplicate workspace group.");
+      ids.add(group.id); groups.push(group);
+    }
     cursor = page.has_more ? page.cursor : undefined;
-    if (page.has_more && !cursor) throw new Error("Workspace group pagination returned no cursor.");
+    if (page.has_more && (typeof cursor !== "string" || !cursor || !page.data.length || cursors.has(cursor) || cursors.size >= 100)) throw new Error("Incomplete or repeated workspace group pagination.");
+    if (cursor) cursors.add(cursor);
   } while (cursor);
   return groups;
+}
+
+export async function createWorkspaceGroup(baseUrl: string, workspaceId: string, name: string, adminKey: string) {
+  return fetchJson<OpenAIGroup>(`${baseUrl}/manage/workspaces/${workspaceId}/groups`, {
+    method: "POST", headers: headers(adminKey, true), body: JSON.stringify({ name }),
+  }, 1);
 }
 
 export async function listGroupUsers(baseUrl: string, workspaceId: string, groupId: string, adminKey: string) {
@@ -93,10 +124,10 @@ export async function updateGroupMembership(baseUrl: string, workspaceId: string
   if (action === "add") {
     await fetchJson(`${baseUrl}/manage/workspaces/${workspaceId}/groups/${encodeURIComponent(groupId)}/users`, {
       method: "POST", headers: headers(adminKey, true), body: JSON.stringify({ user_id: userId }),
-    });
+    }, 1);
     return;
   }
   await fetchJson(`${baseUrl}/manage/workspaces/${workspaceId}/groups/${encodeURIComponent(groupId)}/users/${encodeURIComponent(userId)}`, {
     method: "DELETE", headers: headers(adminKey),
-  });
+  }, 1);
 }

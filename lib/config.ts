@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 
 type RuntimeEnvironment = Record<string, string | undefined>;
 
-function value(name: string) {
+export function value(name: string) {
   const runtime = env as unknown as RuntimeEnvironment;
   return runtime[name] ?? process.env[name];
 }

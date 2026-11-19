@@ -17,31 +17,70 @@ export interface AppSettings {
   budgetAlertPercent: number;
   billingPeriodStart: string | null;
   billingPeriodEnd: string | null;
+  billingSnapshotAt?: string | null;
 }
 
 export interface OrganizerMappings {
+  policyVersion?: 2;
   roleToGroups: Record<string, string[]>;
+  roleToGroupsInLeaderStructure?: Record<string, string[]>;
+  roleToGroupsOutsideLeaderStructure?: Record<string, string[]>;
   entityToGroups: Partial<Record<Entity, string[]>>;
+  emailDomainToGroups: Record<string, string[]>;
+  structureRules?: StructureGroupRule[];
+  memberOverrides?: Record<string, string>; // Workspace member ID → one manually managed group.
+}
+
+export interface StructureGroupRule {
+  managerId: string;
+  managerName: string;
+  managerEmail: string | null;
+  groupId: string;
+}
+
+export interface MemberStructureContext {
+  personId: string | null; // Verified People API identity, eligible for their own structure rule.
+  ancestorIds: string[]; // Immediate manager first; excludes the member itself.
+  problem: string | null;
+  leaderId?: string | null; // Verified reporting-tree anchor for scoped job-title rules.
+  n1HeadId?: string | null; // Direct report of the leader's manager who owns this person.
+}
+
+export interface OrganizerStructureContext {
+  members: Record<string, MemberStructureContext>;
+  retrievedAt: string | null;
+  error: string | null;
+  leaderName?: string;
+  n1Heads?: { id: string; name: string }[];
+  n1Error?: string | null;
 }
 
 export interface Member {
   id: string;
   name: string;
   email: string;
-  workspaceRole: "Owner" | "Admin" | "Member";
+  workspaceRole: "Owner" | "Admin" | "Member" | "Analytics Viewer" | "Unknown";
   peopleRole: string | null;
   department: string | null;
   manager: string | null;
   entity: Entity;
   groups: string[];
+  groupIds?: string[];
   usage: number;
+  usageValue?: number | null;
   messages: number;
   status: "Active" | "Invited" | "Inactive";
-  peopleMatch: "Matched" | "Missing" | "Ambiguous";
+  peopleMatch: "Matched" | "Missing" | "Ambiguous" | "Stale";
   addedAt?: string | null;
   addedByName?: string | null;
   addedByEmail?: string | null;
   additionSource?: AttributionSource;
+}
+
+export interface ExclusiveGroupSet {
+  id: string;
+  name: string;
+  groupIds: string[];
 }
 
 export interface WorkspaceGroup {
@@ -107,11 +146,13 @@ export interface AnalyticsData {
   source: string;
   settings: AppSettings;
   valuationCoverage: "complete" | "partial" | "unavailable";
+  valuationBasis?: "reported" | "api-estimate" | "manual" | "mixed" | "none";
   totals: {
     usage: number;
     usageValue: number | null;
     messages: number;
     activeUsers: number;
+    currentActiveUsers?: number;
     totalMembers: number;
     averageUsagePerActive: number;
     averageUsageValuePerActive: number | null;
@@ -119,8 +160,17 @@ export interface AnalyticsData {
   series: AnalyticsSeriesPoint[];
   byEntity: AnalyticsBreakdownRow[];
   byGroup: AnalyticsBreakdownRow[];
+  byRole: AnalyticsBreakdownRow[];
   byUser: AnalyticsBreakdownRow[];
   warning: string | null;
+}
+
+export interface ManagementManagerOption {
+  id: string;
+  name: string;
+  email: string | null;
+  title: string | null;
+  department: string | null;
 }
 
 export interface ManagementCostRow {
@@ -134,7 +184,7 @@ export interface ManagementCostRow {
   messages: number;
   usage: number;
   usageValue: number | null;
-  davidOrgShare: number;
+  selectedOrgShare: number;
   invoiceShare: number;
   allocatedInvoiceCost: number | null;
   reconciliation: boolean;
@@ -158,9 +208,9 @@ export interface ManagementCostData {
   estimatedInvoice: number | null;
   invoiceSnapshotPeriod: string | null;
   invoiceAllocationAvailable: boolean;
-  davidOrgUsage: number;
-  davidOrgInvoiceShare: number;
-  davidOrgAllocatedCost: number | null;
+  selectedOrgUsage: number;
+  selectedOrgInvoiceShare: number;
+  selectedOrgAllocatedCost: number | null;
   mappedMembers: number;
   unresolvedMembers: number;
   rows: ManagementCostRow[];

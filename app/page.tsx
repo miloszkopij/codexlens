@@ -14,7 +14,7 @@ type PageProps = {
 export default async function Home({ searchParams }: PageProps) {
   const params = searchParams ? await searchParams : {};
   const requestedView = Array.isArray(params.view) ? params.view[0] : params.view;
-  const initialView = requestedView === "analytics" || requestedView === "management" || requestedView === "members" || requestedView === "organize" || requestedView === "changes"
+  const initialView = requestedView === "analytics" || requestedView === "management" || requestedView === "members" || requestedView === "organize" || requestedView === "permissions" || requestedView === "changes"
     ? requestedView : "overview";
   return <CodexlensApp initialView={initialView} forceDemo={params.demo === "1"} />;
 }
